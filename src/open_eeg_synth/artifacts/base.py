@@ -165,6 +165,38 @@ class Occupancy:
                 break
             best_art._consume_next()
         self._advanced_to = max(self._advanced_to, until)
+        self._prune_stale_spans()
+
+    def _prune_stale_spans(self) -> None:
+        """Drop spans that can never overlap a future event, so a long stream's `spans` (and
+        `next_free`'s scan over it) does not grow without bound (DESIGN §7.3/§8.2, streaming
+        long-session review "S2").
+
+        Every registered exclusive artifact's own `_earliest` (the earliest sample *it* could
+        next place an event at) only ever increases - each commit sets it to that event's end
+        plus its gap, never earlier than the onset just used, which was itself never before the
+        previous `_earliest`. So a span that ends at or before the smallest `_earliest` among the
+        artifacts that can still schedule (`_rate_max > 0`; a permanently silent artifact places
+        no floor at all) is behind every future onset and can be forgotten - `next_free`'s
+        collision check needs `start < end`, and every future `start` is now `>= end`. This is
+        purely a memory/scan-cost cleanup: it never changes which onset gets accepted, so
+        chunk-invariance (DESIGN §8.2) is untouched.
+        """
+        if not self._exclusive:
+            return
+        floors = [art._earliest for art in self._exclusive if art._rate_max > 0.0]
+        if not floors:
+            return
+        watermark = min(floors)
+        kept = [
+            (span, owner)
+            for span, owner in zip(self.spans, self._span_owners, strict=True)
+            if span[1] > watermark
+        ]
+        if len(kept) == len(self.spans):
+            return
+        self.spans = [span for span, _ in kept]
+        self._span_owners = [owner for _, owner in kept]
 
 
 @dataclass

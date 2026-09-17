@@ -725,6 +725,32 @@ def test_exclusive_tie_break_goes_to_the_first_registered_artifact():
     assert b._truth_onset == [150]  # b is pushed past a's [100, 150) claim
 
 
+def test_occupancy_prunes_spans_behind_the_watermark_over_a_long_stream():
+    """A long-running stream (DESIGN §7.3/§8.2 "S2") keeps scheduling exclusive events forever;
+    without pruning, `Occupancy.spans` grows by one entry per committed event and never shrinks,
+    so `next_free`'s scan gets slower and slower the longer the stream runs. A span that ends at
+    or before every registered exclusive artifact's own earliest possible next onset (`_earliest`,
+    which only ever increases) can never overlap a future event, so it is safe to drop. `spans`
+    should stay small no matter how long the stream runs, and placement must stay collision-free
+    exactly as it would without pruning."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    a = Pulse(rate_by_state={"eyes_open": 5.0}, exclusive=True, min_gap_s=0.05, length_s=0.05)
+    b = Pulse(rate_by_state={"eyes_open": 5.0}, exclusive=True, min_gap_s=0.05, length_s=0.05)
+    a.bind(_ctx(tl, seed=11, occupancy=occ, name="artifact:a"))
+    b.bind(_ctx(tl, seed=12, occupancy=occ, name="artifact:b"))
+    max_spans = 0
+    for t0 in range(0, int(600 * FS), 100):  # 600 simulated seconds, 1 s chunks
+        a.render(t0, 100)
+        b.render(t0, 100)
+        max_spans = max(max_spans, len(occ.spans))
+    truth = a.truth() + b.truth()
+    assert len(truth) > 2000  # the scheduler really did keep going the whole time
+    assert max_spans < 20  # never grows past a handful of not-yet-safe-to-drop spans
+    offsets = sorted((t.onset_s, t.offset_s) for t in truth)
+    assert all(offsets[i][1] <= offsets[i + 1][0] + 1e-9 for i in range(len(offsets) - 1))
+
+
 @pytest.fixture(autouse=True, scope="module")
 def _unregister_test_plugins():
     yield
