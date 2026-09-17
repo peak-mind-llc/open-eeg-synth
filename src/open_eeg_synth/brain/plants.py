@@ -5,19 +5,50 @@ DESIGN §4.4.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Any, ClassVar, Protocol
 
-from open_eeg_synth._canon import canonical_fields
+from open_eeg_synth._canon import canonical_fields, json_plain
 from open_eeg_synth.brain.rhythm import BurstGate, RhythmSpec
+
+
+def _validate_finite_fields(obj: Any) -> None:
+    """Every float field of ``obj`` must be finite: a NaN/inf survives ``canonical_fields``
+    silently and then fails much later (JSON digesting, or a signal that is NaN everywhere)."""
+    for f in fields(obj):
+        v = getattr(obj, f.name)
+        if isinstance(v, float) and not math.isfinite(v):
+            raise ValueError(f"{type(obj).__name__}.{f.name} must be finite; got {v!r}")
+
+
+def _validate_positive_f0(obj: Any) -> None:
+    if obj.f0_hz <= 0:
+        raise ValueError(f"{type(obj).__name__}.f0_hz must be > 0; got {obj.f0_hz!r}")
+
+
+def _validate_nonneg_factor(obj: Any) -> None:
+    if obj.factor < 0:
+        raise ValueError(f"{type(obj).__name__}.factor must be >= 0; got {obj.factor!r}")
+
+
+def _confinement_note(state_gain: dict[str, float]) -> str:
+    """A plant description names any state where its own ``state_gain`` is exactly zero."""
+    zero = sorted(s for s, g in state_gain.items() if g == 0.0)
+    return "" if not zero else f" (absent in {', '.join(zero)})"
 
 
 @dataclass(frozen=True)
 class PlantRecord:
+    """A plant's truth record. ``band_hz``/``amp_uv``/``sites`` are None/None/() for a
+    modifier-only plant (``LateralImbalance``, ``WidespreadExcess``, ``PeakShift``,
+    ``ReducedRhythm``): it has no band or site of its own, only a target rhythm named in
+    ``params["rhythm"]``."""
+
     kind: str
     sites: tuple[str, ...]
-    band_hz: tuple[float, float]
+    band_hz: tuple[float, float] | None
     amp_uv: float | None
     onset_s: float
     offset_s: float | None
@@ -26,12 +57,12 @@ class PlantRecord:
 
     def __post_init__(self) -> None:
         canonical_fields(self)
+        _validate_finite_fields(self)
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        d["sites"], d["band_hz"] = list(self.sites), list(self.band_hz)
-        d["params"] = {k: (list(v) if isinstance(v, tuple) else v) for k, v in self.params.items()}
-        return d
+        # a round trip through json_plain deep-copies every nested dict/tuple (no aliasing
+        # with self.params) and turns every tuple into a list (JSON-safe), in one pass.
+        return json_plain(asdict(self))
 
 
 @dataclass(frozen=True)
@@ -44,6 +75,7 @@ class Modifier:
 
     def __post_init__(self) -> None:
         canonical_fields(self)
+        _validate_finite_fields(self)
 
 
 def apply_modifiers(
@@ -54,13 +86,23 @@ def apply_modifiers(
         if m.rhythm not in out:
             raise KeyError(f"modifier targets unknown rhythm {m.rhythm!r}; have {sorted(out)}")
         r = out[m.rhythm]
+        new_f0 = r.f0_hz + m.f0_shift_hz
+        if new_f0 <= 0:
+            raise ValueError(
+                f"modifier on {m.rhythm!r} would give a centre frequency <= 0 Hz "
+                f"({r.f0_hz!r} + {m.f0_shift_hz!r} = {new_f0!r})"
+            )
         hg = dict(r.hemisphere_gain)
         for side, g in m.hemisphere_gain.items():
             hg[side] = hg.get(side, 1.0) * g
+        # Deferred: when two modifiers both add extra_sites to the same rhythm, the resulting
+        # site order (and so a downstream consumer reading sites[0], say) depends on which
+        # modifier is processed first — order dependence, not a correctness bug (every requested
+        # site still ends up present exactly once); not fixed here.
         out[m.rhythm] = replace(
             r,
             amp_uv=r.amp_uv * m.amp_scale,
-            f0_hz=r.f0_hz + m.f0_shift_hz,
+            f0_hz=new_f0,
             hemisphere_gain=hg,
             sites=r.sites + tuple(s for s in m.extra_sites if s not in r.sites),
         )
@@ -81,17 +123,22 @@ PLANTS: dict[str, type] = {}
 
 
 def register_plant(cls):
-    PLANTS[cls.kind] = cls
+    kind = cls.kind
+    if kind in PLANTS and PLANTS[kind] is not cls:
+        raise ValueError(f"plant kind {kind!r} already registered by {PLANTS[kind]}")
+    PLANTS[kind] = cls
     return cls
 
 
 def plant_to_dict(p: Plant) -> dict[str, Any]:
-    d = {k: (list(v) if isinstance(v, tuple) else v) for k, v in asdict(p).items()}
-    return {"kind": p.kind, "params": d}
+    return {"kind": p.kind, "params": json_plain(asdict(p))}
 
 
 def plant_from_dict(d: dict[str, Any]) -> Plant:
-    cls = PLANTS[d["kind"]]
+    kind = d["kind"]
+    if kind not in PLANTS:
+        raise KeyError(f"unknown plant kind {kind!r}; known: {sorted(PLANTS)}")
+    cls = PLANTS[kind]
     params = dict(d["params"])
     for k, v in params.items():
         if isinstance(v, list):
@@ -115,11 +162,16 @@ class FocalSlow:
 
     def __post_init__(self) -> None:
         canonical_fields(self)
+        _validate_finite_fields(self)
+        _validate_positive_f0(self)
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
+        # the frequency rides in the compiled name so two FocalSlow plants at the same site
+        # (different f0_hz) compile to distinct rhythms instead of colliding (Task 21 fix round 1)
+        name = f"plant:focal_slow:{self.site}:{self.f0_hz:g}hz"
         return (
             RhythmSpec(
-                f"plant:focal_slow:{self.site}",
+                name,
                 self.f0_hz,
                 self.amp_uv,
                 sites=(self.site,),
@@ -146,7 +198,8 @@ class FocalSlow:
             None,
             asdict(self),
             f"a {self.f0_hz:.1f} Hz rhythm of about {self.amp_uv:.0f} uV from one "
-            f"cortical patch under {self.site}, present throughout",
+            f"cortical patch under {self.site}, present throughout"
+            f"{_confinement_note(self.state_gain)}",
         )
 
 
@@ -167,6 +220,8 @@ class RhythmicBursts:
 
     def __post_init__(self) -> None:
         canonical_fields(self)
+        _validate_finite_fields(self)
+        _validate_positive_f0(self)
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         name = "plant:rhythmic_bursts:" + "+".join(self.sites)
@@ -200,9 +255,9 @@ class RhythmicBursts:
             0.0,
             None,
             asdict(self),
-            f"bursts of a {self.f0_hz:.1f} Hz rhythm ({self.burst_s[0]:.0f}-"
-            f"{self.burst_s[1]:.0f} s long, every {self.gap_s[0]:.0f}-{self.gap_s[1]:.0f} s)"
-            f" under {', '.join(self.sites)}",
+            f"bursts of a {self.f0_hz:.1f} Hz rhythm ({self.burst_s[0]:.1f}-"
+            f"{self.burst_s[1]:.1f} s long, every {self.gap_s[0]:.1f}-{self.gap_s[1]:.1f} s)"
+            f" under {', '.join(self.sites)}{_confinement_note(self.state_gain)}",
         )
 
 
@@ -216,6 +271,10 @@ class LateralImbalance:
 
     def __post_init__(self) -> None:
         canonical_fields(self)
+        _validate_finite_fields(self)
+        _validate_nonneg_factor(self)
+        if self.side not in ("left", "right"):
+            raise ValueError(f"LateralImbalance.side must be 'left' or 'right'; got {self.side!r}")
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         return ()
@@ -227,7 +286,7 @@ class LateralImbalance:
         return PlantRecord(
             self.kind,
             (),
-            (0.0, 0.0),
+            None,
             None,
             0.0,
             None,
@@ -246,6 +305,8 @@ class WidespreadExcess:
 
     def __post_init__(self) -> None:
         canonical_fields(self)
+        _validate_finite_fields(self)
+        _validate_nonneg_factor(self)
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         return ()
@@ -256,8 +317,8 @@ class WidespreadExcess:
     def record(self) -> PlantRecord:
         return PlantRecord(
             self.kind,
-            self.extra_sites,
-            (0.0, 0.0),
+            (),
+            None,
             None,
             0.0,
             None,
@@ -276,6 +337,7 @@ class PeakShift:
 
     def __post_init__(self) -> None:
         canonical_fields(self)
+        _validate_finite_fields(self)
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         return ()
@@ -287,7 +349,7 @@ class PeakShift:
         return PlantRecord(
             self.kind,
             (),
-            (0.0, 0.0),
+            None,
             None,
             0.0,
             None,
@@ -305,6 +367,8 @@ class ReducedRhythm:
 
     def __post_init__(self) -> None:
         canonical_fields(self)
+        _validate_finite_fields(self)
+        _validate_nonneg_factor(self)
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         return ()
@@ -316,7 +380,7 @@ class ReducedRhythm:
         return PlantRecord(
             self.kind,
             (),
-            (0.0, 0.0),
+            None,
             None,
             0.0,
             None,

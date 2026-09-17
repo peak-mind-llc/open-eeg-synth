@@ -140,14 +140,23 @@ class CaseSpec:
 
 
 def compiled_rhythms(spec: CaseSpec) -> tuple[RhythmSpec, ...]:
-    """Base rhythms with the plants' modifiers applied, followed by the plants' own rhythms."""
+    """Base rhythms with the plants' modifiers applied, followed by the plants' own rhythms.
+
+    Every per-rhythm keyed structure (subject draws, time streams, ``BrainLayer.parts``) keys on
+    ``RhythmSpec.name``, so two compiled rhythms sharing a name would collide and silently render
+    as one rhythm at whichever compiled last (Task 21 fix round 1) — raise instead.
+    """
     from open_eeg_synth.brain.plants import apply_modifiers
 
     mods, extra = [], []
     for p in spec.plants:
         mods.extend(p.modifiers())
         extra.extend(p.rhythms())
-    return tuple(apply_modifiers(spec.brain.rhythms, mods)) + tuple(extra)
+    out = tuple(apply_modifiers(spec.brain.rhythms, mods)) + tuple(extra)
+    dupes = sorted(n for n, c in Counter(r.name for r in out).items() if c > 1)
+    if dupes:
+        raise ValueError(f"duplicate compiled rhythm name(s): {dupes}")
+    return out
 
 
 @dataclass
@@ -283,6 +292,16 @@ def case_id_for(spec: CaseSpec) -> str:
     return f"synth-{h}"
 
 
+def _plant_is_silent(plant, states: set[str]) -> bool:
+    """True when ``plant``'s own ``state_gain`` (``FocalSlow``/``RhythmicBursts``; absent on a
+    modifier-only plant) is exactly zero in every state a condition's timeline contains, so it
+    renders nothing there and its record does not belong in that condition's truth."""
+    gain = getattr(plant, "state_gain", None)
+    if not gain:
+        return False
+    return all(gain.get(s, 1.0) == 0.0 for s in states)
+
+
 def make_case(spec: CaseSpec) -> Case:
     subject = make_subject(spec)
     recordings: dict[str, Recording] = {}
@@ -290,6 +309,7 @@ def make_case(spec: CaseSpec) -> Case:
         eng = make_engine(spec, subject, cond)
         rec = eng.render_all(int(round(cond.duration_s * spec.fs)))
         rec.timeline = cond.timeline
-        rec.plants = [p.record() for p in spec.plants]
+        states = {seg.state for seg in cond.timeline.segments}
+        rec.plants = [p.record() for p in spec.plants if not _plant_is_silent(p, states)]
         recordings[cond.name] = rec
     return Case(spec, case_id_for(spec), subject, recordings)

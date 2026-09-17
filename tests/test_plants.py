@@ -76,7 +76,7 @@ def test_focal_slow_raises_delta_at_site():
     clean, planted = _ec(21, ()), _ec(21, (FocalSlow("F7", f0_hz=2.5, amp_uv=45.0),))
     assert band_power(planted, FS, 1.5, 3.5)[f7] > 4 * band_power(clean, FS, 1.5, 3.5)[f7]
     spec = resting_case(21, plants=(FocalSlow("F7"),))
-    assert [r.name for r in compiled_rhythms(spec)][-1] == "plant:focal_slow:F7"
+    assert [r.name for r in compiled_rhythms(spec)][-1] == "plant:focal_slow:F7:2.5hz"
 
 
 def test_lateral_imbalance_and_reduced_rhythm():
