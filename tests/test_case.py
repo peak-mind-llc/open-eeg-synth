@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -74,6 +75,35 @@ def test_unperturbed_head_when_asked():
     spec = resting_case(7, duration_s=1.0, artifacts=())
     spec = CaseSpec.from_dict({**spec.to_dict(), "perturb_head": False})
     assert make_subject(spec).head.perturbation is None
+
+
+def test_make_subject_warns_once_per_process_about_a_broken_entry_point(monkeypatch):
+    """``discover()`` itself re-warns about a broken entry point on every call, by design (kept
+    as-is - see registry's own test_discover_warns_on_every_call_and_names_the_failure_in_the_
+    keyerror); but ``make_subject`` calling it once per case must not spam that same warning for
+    every case built in this process afterwards - only the first case should surface it."""
+    import open_eeg_synth.case as case_module
+    from open_eeg_synth.artifacts import registry
+
+    class BrokenEP:
+        name = "make_subject_still_broken"
+
+        def load(self):
+            raise ImportError("broken for the make_subject warn-once test")
+
+    monkeypatch.setattr(registry, "entry_points", lambda group: [BrokenEP()])
+    monkeypatch.setattr(registry, "_discovered", False)
+    monkeypatch.setattr(registry, "_failed_entry_points", {})
+    monkeypatch.setattr(case_module, "_warned_broken_entry_points", set())
+
+    spec = resting_case(1, duration_s=1.0, artifacts=())
+    with pytest.warns(UserWarning, match="make_subject_still_broken"):
+        make_subject(spec)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        make_subject(spec)
+    assert caught == []
 
 
 class _Tick(EventArtifact):
@@ -243,6 +273,29 @@ def test_infinite_durations_survive_strict_json():
     assert back == spec and back.digest() == spec.digest()
     assert back.conditions[0].duration_s == math.inf
     assert back.conditions[0].timeline.segments[0].t1_s == math.inf
+
+
+def test_make_case_raises_a_clear_error_for_a_non_finite_condition_duration():
+    """make_case/make_recording render a whole condition up front, so a condition whose
+    duration_s is not finite used to blow up with an opaque OverflowError (round(inf * fs)
+    cannot convert float infinity to integer) instead of naming the condition. StreamSource's
+    own condition is deliberately unbounded (duration_s=inf) but never hits this path, since it
+    renders chunk by chunk rather than a whole condition at once."""
+    spec = CaseSpec(
+        seed=1,
+        conditions=(ConditionSpec("stream", math.inf, StateTimeline.constant("eyes_open")),),
+    )
+    with pytest.raises(ValueError, match="stream"):
+        make_case(spec)
+
+
+def test_stream_source_keeps_working_with_its_unbounded_condition():
+    from open_eeg_synth.stream import StreamSource
+
+    src = StreamSource(["O1", "O2"], 100.0, seed=1)
+    assert math.isinf(src.spec.conditions[0].duration_s)
+    chunk = src.next_chunk(50)
+    assert chunk.shape == (2, 50)
 
 
 def test_patch_offsets_and_lags_are_subject_properties():

@@ -87,3 +87,32 @@ def test_case_truth_raises_value_error_for_missing_condition_files():
     case = make_case(resting_case(56, duration_s=1.0))
     with pytest.raises(ValueError, match="eyes_open"):
         case_truth(case, {"eyes_closed": "a.edf"})
+
+
+def test_render_layers_raises_a_clear_error_for_an_unknown_condition():
+    """A condition name that is not in the sealed spec at all used to raise a bare
+    StopIteration (``next(c for c in spec.conditions if c.name == condition)`` on an empty
+    generator); it must raise ValueError naming the condition instead."""
+    case = make_case(resting_case(57, duration_s=1.0))
+    d = case_truth(case, {"eyes_closed": "a.edf", "eyes_open": "b.edf"})
+    with pytest.raises(ValueError, match="nap_time"):
+        render_layers(d, "nap_time")
+
+
+def test_render_layers_raises_a_clear_error_for_a_condition_missing_from_recordings():
+    """A condition that is in the spec but was never recorded into this truth file's
+    ``recordings`` used to raise a bare KeyError; it must raise ValueError naming the condition
+    instead."""
+    case = make_case(resting_case(58, duration_s=1.0))
+    d = case_truth(case, {"eyes_closed": "a.edf", "eyes_open": "b.edf"})
+    del d["recordings"]["eyes_open"]
+    with pytest.raises(ValueError, match="eyes_open"):
+        render_layers(d, "eyes_open")
+
+
+def test_render_layers_warns_on_a_generator_version_mismatch():
+    case = make_case(resting_case(59, duration_s=1.0))
+    d = case_truth(case, {"eyes_closed": "a.edf", "eyes_open": "b.edf"})
+    d["generator"]["version"] = "0.0.0-not-the-real-version"
+    with pytest.warns(UserWarning, match="0.0.0-not-the-real-version"):
+        render_layers(d, "eyes_open")

@@ -25,8 +25,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     if args.spec:
-        spec = CaseSpec.from_dict(json.loads(Path(args.spec).read_text()))
-        spec = CaseSpec.from_dict({**spec.to_dict(), "seed": args.seed})
+        spec_dict = json.loads(Path(args.spec).read_text())
+        spec = CaseSpec.from_dict({**spec_dict, "seed": args.seed})
     else:
         spec = resting_case(args.seed, duration_s=args.duration)
     case = make_case(spec)

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import warnings
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -211,6 +213,13 @@ class Subject:
         }
 
 
+# Broken third-party artifact entry points that make_subject has already warned about in this
+# process, keyed by entry point name. registry.discover() itself re-warns on every call (by
+# design, so a direct caller never sees a failure go quiet); make_subject calls it once per case
+# and must not repeat that same warning for every case built afterwards.
+_warned_broken_entry_points: set[str] = set()
+
+
 def make_subject(spec: CaseSpec) -> Subject:
     """Everything drawn once per subject, on the FULL head model (DESIGN §7.2).
 
@@ -253,7 +262,17 @@ def make_subject(spec: CaseSpec) -> Subject:
     # kind's stream cannot shift any other kind's draws.
     from open_eeg_synth.artifacts.registry import ARTIFACTS, discover
 
-    discover()
+    # discover() warns again on every call; only forward a warning this process has not already
+    # shown for that entry point, so building many cases does not repeat it once per case.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        discover()
+    for w in caught:
+        key = str(w.message)
+        if key not in _warned_broken_entry_points:
+            _warned_broken_entry_points.add(key)
+            warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
+
     jitter = {}
     for k in sorted({a.kind for a in spec.artifacts}):
         if getattr(ARTIFACTS.get(k), "jitter_pattern", None) is None:
@@ -351,6 +370,13 @@ def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -
     :func:`casefile.truth.render_layers`, so a truth file's re-rendered plants always match what
     ``make_case`` produced: both call this, never duplicate its plant-silencing logic.
     """
+    if not math.isfinite(condition.duration_s):
+        raise ValueError(
+            f"condition {condition.name!r} has a non-finite duration_s "
+            f"({condition.duration_s!r}); make_recording/make_case render a whole condition up "
+            "front and need a finite duration - use StreamSource for an unbounded, chunked "
+            "recording instead"
+        )
     eng = make_engine(spec, subject, condition)
     rec = eng.render_all(int(round(condition.duration_s * spec.fs)))
     rec.timeline = condition.timeline

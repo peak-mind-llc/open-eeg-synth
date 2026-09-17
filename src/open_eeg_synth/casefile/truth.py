@@ -24,6 +24,12 @@ class LayerMismatchError(RuntimeError):
     """Re-rendered layers do not match the recorded per-channel RMS."""
 
 
+def _channel_rms_uv(layer: np.ndarray) -> np.ndarray:
+    """Per-channel RMS of one rendered layer, full precision: the one computation both the truth
+    file's recorded values and `render_layers`' re-rendered check must agree on."""
+    return np.sqrt(np.mean(layer.astype(np.float64) ** 2, axis=1))
+
+
 def _recording_truth(rec: Recording, file: str) -> dict:
     return {
         "file": file,
@@ -32,8 +38,7 @@ def _recording_truth(rec: Recording, file: str) -> dict:
         "channels": list(rec.channels),
         "layers": list(rec.layers),
         "layer_rms_uv": {
-            k: [round(float(v), 4) for v in np.sqrt(np.mean(a.astype(np.float64) ** 2, axis=1))]
-            for k, a in rec.layers.items()
+            k: [round(float(v), 4) for v in _channel_rms_uv(a)] for k, a in rec.layers.items()
         },
         "timeline": rec.timeline.to_dict() if rec.timeline is not None else None,
         "truth": [t.to_dict() for t in rec.truth],
@@ -94,7 +99,17 @@ def render_layers(truth: dict, condition: str, *, rtol: float = 1e-3) -> Recordi
             stacklevel=2,
         )
     spec = CaseSpec.from_dict(truth["spec"])
-    cond = next(c for c in spec.conditions if c.name == condition)
+    cond = next((c for c in spec.conditions if c.name == condition), None)
+    if cond is None:
+        raise ValueError(
+            f"condition {condition!r} is not in this truth file's spec; known conditions: "
+            f"{[c.name for c in spec.conditions]}"
+        )
+    if condition not in truth["recordings"]:
+        raise ValueError(
+            f"condition {condition!r} has no recording in this truth file; known recordings: "
+            f"{list(truth['recordings'])}"
+        )
     subject = make_subject(spec)
     # Same per-condition path as make_case (R1): render + timeline + plant-silencing all live in
     # one place, so a truth file's re-rendered plants can never drift from what make_case wrote.
@@ -109,7 +124,7 @@ def render_layers(truth: dict, condition: str, *, rtol: float = 1e-3) -> Recordi
         )
     expected_rms = expected["layer_rms_uv"]
     for name, arr in rec.layers.items():
-        got = np.sqrt(np.mean(arr.astype(np.float64) ** 2, axis=1))
+        got = _channel_rms_uv(arr)
         want = np.asarray(expected_rms[name])
         if not np.allclose(got, want, rtol=rtol, atol=1e-3):
             raise LayerMismatchError(
