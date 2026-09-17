@@ -1,0 +1,15 @@
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from open_eeg_synth.case import make_case
+from open_eeg_synth.recipes import resting_case
+
+
+@pytest.mark.slow
+def test_two_condition_case_renders_in_budget():
+    t0 = time.perf_counter()
+    make_case(resting_case(20260916, duration_s=240.0))
+    assert time.perf_counter() - t0 < 15.0  # DESIGN §8.4 target 6 s, hard limit 15 s

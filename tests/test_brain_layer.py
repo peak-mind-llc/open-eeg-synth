@@ -65,16 +65,28 @@ def test_brain_layer_chunk_invariance_and_eyes_closed_alpha():
     alpha = band_power(x, FS, 8, 13)
     assert alpha[o1] > 1.5 * alpha[fz]
     assert 0.9 < psd_slope(x, FS) < 1.5
-    assert 6.0 < x[CHANNELS_19.index("Cz")].std() < 30.0  # provisional; Task 12 pins ~12 uV
+    # Coarse only: an unfiltered std is dominated by the background's sub-1 Hz power. The
+    # calibrated, band-limited amplitude is pinned as a multi-seed median in the next test.
+    assert 6.0 < x[CHANNELS_19.index("Cz")].std() < 30.0
 
 
-def test_o1_alpha_share_median_across_seeds():
-    """fix round 1, item 4: a single seed's O1 alpha share (0.62 at seed 1) is not
-    representative — the 9-seed median is ~0.31 (range ~0.13-0.69). This checks the
-    order of magnitude across several seeds instead of one lucky one; Task 12's
-    calibration pins the exact value the realism suite needs (~0.6 empirical)."""
-    o1 = CHANNELS_19.index("O1")
-    shares = []
+# Calibrated medians of this test's own measurement (brain layer only, nominal head, eyes closed,
+# average reference, 60 s, the 9 seeds below) for the recipe calibrated in Task 12
+# (recipes.py): O1 alpha share 0.567 (range 0.20-0.76), Cz 1-45 Hz RMS 11.7 uV (11.1-14.0).
+CAL_O1_ALPHA_SHARE = 0.567
+CAL_CZ_RMS_1_45_UV = 11.7
+
+
+def test_calibrated_amplitudes_median_across_seeds():
+    """The resting recipe's calibrated amplitudes, judged as medians over subjects.
+
+    One seed is not representative (O1 alpha share spans 0.20-0.76 over these nine), so both
+    numbers are medians. Alpha share = 8-13 / 1-40 Hz power at O1, pinned to at least 0.45 (the
+    realism target is ~0.6, DESIGN §9.1). Cz RMS is read over 1-45 Hz, as §9.1 measures it (the
+    unfiltered value is dominated by sub-1 Hz background), within +/-30 % of the calibrated median.
+    """
+    o1, cz = CHANNELS_19.index("O1"), CHANNELS_19.index("Cz")
+    shares, rms = [], []
     for seed in (1, 2, 3, 100, 101, 102, 103, 104, 105):  # 9 seeds, >= the required 6
         x = _build(resting_brain(), StateTimeline.constant("eyes_closed"), seed=seed)().render(
             0, int(60 * FS)
@@ -82,8 +94,10 @@ def test_o1_alpha_share_median_across_seeds():
         x = x - x.mean(axis=0, keepdims=True)
         alpha, total = band_power(x, FS, 8, 13), band_power(x, FS, 1, 40)
         shares.append(alpha[o1] / total[o1])
-    median = float(np.median(shares))
-    assert 0.15 < median < 0.5  # measured median ~0.31; provisional until Task 12 calibrates
+        rms.append(float(np.sqrt(band_power(x, FS, 1, 45)[cz])))
+    assert 0.45 < float(np.median(shares)) < 0.75
+    assert 0.7 * CAL_CZ_RMS_1_45_UV < float(np.median(rms)) < 1.3 * CAL_CZ_RMS_1_45_UV
+    assert abs(float(np.median(shares)) - CAL_O1_ALPHA_SHARE) < 0.1
 
 
 def test_eyes_open_collapses_alpha():
