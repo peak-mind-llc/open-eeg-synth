@@ -5866,3 +5866,4 @@ Pre-flight rulings P1–P18 (see `.superpowers/sdd/PLAN/progress.md`) plus two c
 - D20 (preflight) → Task 22: the alpha-peak shift is measured on a Welch spectrum, not a raw periodogram.
 - Setup ruling → Task 35: Step 3 stops after the version commit; tag/release/merge wait for review.
 - Formatting → global constraints: code blocks are not pre-formatted; `ruff format .` runs before each green step.
+- Current description: the code moved past this plan through reviewed decisions during implementation; `docs/DESIGN.md` describes v0.2.0 as built and is the reference where the two differ.
