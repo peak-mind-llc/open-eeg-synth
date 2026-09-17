@@ -5586,7 +5586,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it and eyeball the numbers**
 
 Run: `python scripts/build_realism_reference.py --subjects 20`
-Expected: 20 usable subjects per condition; `groups.eyes_closed["average/Alpha/coh_mean"]` = `{p10 0.365, p50 0.497, p90 0.570}`, `average/Alpha/dwpli_mean` = `{0.134, 0.185, 0.383}`, `aperiodic_exponent` p50 1.196, `rms_uv/Cz` p50 13.7 (DESIGN §9.1). Cross-check: every coherence, dwPLI and coherence-by-distance percentile must equal **2 × the feasibility test's** (`results_real.json` in the session scratchpad) within 0.005, and every exponent / alpha-share percentile must equal 1 × it within 0.005 — the rebuilt file agreed to 0.003 and 0.002 respectively. A factor-of-two shortfall means an averaging with the transpose crept back into Task 30; anything else, check the ICA blink removal and the epoching.
+Expected: 20 usable subjects per condition; `groups.eyes_closed["average/Alpha/coh_mean"]` = `{p10 0.365, p50 0.497, p90 0.570}`, `average/Alpha/dwpli_mean` = `{0.134, 0.185, 0.383}`, `aperiodic_exponent` p50 1.196, `rms_uv/Cz` p50 13.7 (DESIGN §9.1). Cross-check: every coherence, dwPLI and coherence-by-distance percentile must equal **2 × the feasibility test's** (`results_real.json`, the feasibility test's output, which is not part of this repository) within 0.005, and every exponent / alpha-share percentile must equal 1 × it within 0.005 — the rebuilt file agreed to 0.003 and 0.002 respectively. A factor-of-two shortfall means an averaging with the transpose crept back into Task 30; anything else, check the ICA blink removal and the epoching.
 
 - [ ] **Step 3: Commit**
 
@@ -5839,7 +5839,7 @@ git push origin main --tags
 
 ## Revisions applied 2026-09-16
 
-Pre-flight rulings P1–P18 (see `.superpowers/sdd/PLAN/progress.md`) plus two coordinator requests (R1, D1) and three uncovered pre-flight defects (D19, D20 from `preflight.md`; the ruff formatting note). Every changed code block was re-run in a scratch tree against its task's tests: 91 of 91 plan tests pass (fast set, case files, stream, golden, perf, realism smoke); the realism test itself waits for Task 12's calibration.
+Pre-flight decisions P1–P18 (listed below) plus two requests (R1, D1) and three defects found before implementation (D19, D20 and the ruff formatting note). Every changed code block was re-run in a scratch tree against its task's tests: 91 of 91 plan tests pass (fast set, case files, stream, golden, perf, realism smoke); the realism test itself waits for Task 12's calibration.
 
 - P1 → Task 1: `_version.py` is renamed to `version.py` (`git mv`), `SIGNAL_VERSION` added, `[tool.hatch.version] path` and the `__init__` import updated; Step 1 no longer says "confirm `version.py` exists".
 - P2 → Task 9: `StateTimeline` is a frozen dataclass (`segments`, `ramp_s`) with value equality; its round-trip test now asserts `back == tl`. (Tasks 12, 20, 23 round-trip tests unchanged and now pass.)

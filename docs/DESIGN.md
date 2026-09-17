@@ -176,9 +176,9 @@ lead field is derived at load time as `gain[c, s] = Σ_k gain_free[c, s, k] · s
 stored. The free-orientation form is shipped instead of the 0.37 MB fixed form because the orientation
 perturbation in §3.3 needs it.
 
-Facts used by the placement code: median source spacing 3.8 mm; the nearest source to the mirror
-image of any source is 2.6 mm away on median (4.2 mm at the 90th percentile), so mirrored patch
-placement is faithful.
+Facts used by the placement code, measured on the shipped file: median source spacing 3.8 mm; the
+nearest source to the mirror image of any source is 2.74 mm away on median (4.51 mm at the 90th
+percentile, 10.7 mm at most), so mirrored patch placement is faithful.
 
 ### 3.2 Attribution
 
@@ -734,7 +734,9 @@ rate holds as long as `rate × (event length + gap)` stays well below one (§5.6
 Candidates are drawn in time order and each event's waveform is drawn at the moment it is scheduled,
 so the sequence of random draws does not depend on how the timeline is chunked (§8). `truth()` lists
 the events whose onset lies inside the span rendered so far (a pushed event may start later than its
-candidate). Overlap of non-exclusive artifacts (a blink during a jaw clench) is allowed — that is
+candidate). A record keeps the event's whole span: an event that starts near the end of a recording
+is cut there in the signal but not in its record, so its `offset_s` may lie past the recording's
+end, and a consumer clips it. Overlap of non-exclusive artifacts (a blink during a jaw clench) is allowed — that is
 realistic.
 
 **Exclusive artifacts** share one scheduler, the case's `Occupancy`. Each exclusive plug-in scheduling
@@ -1324,8 +1326,8 @@ and — unlike `classic`, which drew blinks per chunk — the samples do not dep
 
 `truth` grows with the stream: it lists every artifact event whose onset lies inside the span
 rendered so far (an event pushed later, past a refractory gap, appears once its onset is rendered),
-and nothing discards it (a default 19-channel stream holds 211 events after 10 minutes and 629 after
-30). A recording application that streams for hours should read it incrementally. The default artifacts are not exclusive, so the
+and nothing discards it (a default 19-channel stream at 256 Hz holds 196–261 events after 10 minutes
+and 650–708 after 30 over seeds 0–9, as the rates predict: about 220 and 660). A recording application that streams for hours should read it incrementally. The default artifacts are not exclusive, so the
 scheduler keeps no spans at all (§5.2).
 
 `due_markers` follows `classic.MarkerSchedule` (kinds `"none"`, `"periodic"` and `"oddball"`; the
@@ -1409,7 +1411,10 @@ default 2 × 240 s case writes about 6 kB. `case_truth(case, files)` builds the 
 }
 ```
 
-`pattern_jitter` is keyed by artifact kind (`"eye_movement"`), not by map name. A condition's `plants`
+An event's `offset_s` in `truth` may exceed the recording's `duration_s` (an event that starts near
+the end keeps its whole span, §5.2), and so may a dead channel's requested end; consumers clip both
+to the recording. `bursts_s` is already clipped. `pattern_jitter` is keyed by artifact kind
+(`"eye_movement"`), not by map name. A condition's `plants`
 list leaves out plants that its timeline silences, and a `RhythmicBursts` record lists that
 condition's bursts in `params["bursts_s"]` (§4.4).
 
@@ -1643,7 +1648,10 @@ realism suite of §9.1 together with its smoke test.
 
 CI (GitHub Actions) runs ruff and the fast set on Python 3.10, 3.11 and 3.12 for pushes and pull
 requests to `main`, the `slow` set on 3.11, and builds the wheel and checks that the two data files and
-their two notices are inside it. The realism suite runs weekly and on demand.
+their two notices are inside it. On every Python version it then installs that wheel with its `edf`
+extra into a bare virtual environment (no development extras) and, outside the checkout, makes the
+default case with `python -m open_eeg_synth make-case --seed 1` and re-renders its eyes-open
+condition with `render_layers`. The realism suite runs weekly and on demand.
 
 What the fast set covers, per module: seeds (determinism, name independence, stability across
 processes); dsp (PSD slope and unit variance of the 1/f cascade at two sample rates and exponents, OU
@@ -1653,11 +1661,12 @@ contents, fixed = free·normal, subsets, aliases, unknown head models, mirror so
 perturbation magnitude, determinism and one-channel heads); background and network (RMS, slope,
 measurable lag between coupled nodes, chunk invariance); rhythm (spectral peak at f0 at the target
 sites, mirror symmetry and polarity of maps, a cross-spectrum phase lag between mirror sites, the
-drowsy alpha peak shift, placement without shared sources, per-patch draws); brain layer (calibration
+drowsy alpha peak shift, placement without shared sources, per-patch draws, burst times under
+random chunking); brain layer (calibration
 pins as medians over nine seeds, a visible theta imbalance, eyes-open alpha suppression, missing
 per-patch draws refused); timeline (weights sum to one, ramps, value equality, JSON with infinite
 ends); plants (each primitive changes band power at its sites by the expected factor, state
-confinement, names, validation, records); artifact framework (scheduling rates by state, the thinned
+confinement, names, validation, records, canonical sites); artifact framework (scheduling rates by state, the thinned
 process, refractory gap, exclusivity and the shared scheduler under random partitions and call
 orders, the onset rule, rebinding, span pruning against an unpruned control, registry and discovery);
 patterns (the T9/T10 reference and pinned map values, sign-keeping capped jitter, full-head
@@ -1665,15 +1674,17 @@ amplitudes, the fallback's sign rule, reliability, blend and clip, mirror montag
 small moves, a 3,000-request sparse sweep per map); plug-ins (each one's waveform, rates, truth
 contents and channels, subsets, jaw EMG placement and anti-aliasing, dead-channel spans); engine (sum
 identity, contiguity check, chunk invariance, buffer copies, read-only mix); case (defaults, identity
-and type strictness, alias canonicalisation, duplicate channels and conditions, subject shared across
-conditions, pattern jitter only for jittering kinds, JSON round trip, chunk invariance with plants and
-drowsiness, drowsiness end to end); case files (EDF round trip in µV, no annotations, MNE read-back,
+and type strictness, artifact parameters as one identity, alias canonicalisation, duplicate channels
+and conditions, whole-second durations, subject shared across conditions, pattern jitter only for
+jittering kinds, JSON round trip, chunk invariance of layers, truth and plant records with artifacts,
+plants and drowsiness, drowsiness end to end); case files (EDF round trip in µV, no annotations, MNE read-back,
 anonymised date, clipping; truth container round trip and contents; `render_layers` verification and
-errors; `write_case` layout; the command line); stream (the recording application's contract: shape,
-dtype, RMS range, determinism, fresh seeds, 1/f slope, posterior-dominant alpha, ECG only on heart
-labels, duplicate labels, non-finite rates, other label sets at 250 and 500 Hz, chunk invariance,
-markers, seed replay, per-call cost); the realism gap matcher; the golden fingerprint; the `classic`
-golden test.
+errors, burst times; `write_case` layout; the command line and its checks before building); stream
+(the recording application's contract: shape, dtype, RMS range, determinism, fresh seeds, 1/f slope,
+posterior-dominant alpha, ECG only on heart labels, duplicate labels, labels outside the head model,
+non-finite rates, other label sets at 250 and 500 Hz, chunk invariance, markers, seed replay,
+per-call cost); the realism gap matcher; the golden fingerprint; the `classic` golden test, and that
+importing `classic` loads numpy only.
 
 ---
 

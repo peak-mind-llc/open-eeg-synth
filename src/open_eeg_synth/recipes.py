@@ -19,13 +19,15 @@ from open_eeg_synth.channels import CHANNELS_19
 #
 #   median over 96 seeds       before (shipped)     after              target
 #   Cz RMS 1-45 Hz, EC / EO    13.9 / 13.7 uV       13.2 / 12.8 uV     real medians 13.7 / 12.7
-#   O1 alpha share EC (p10-90) 0.37 (0.12-0.68)     0.60 (0.36-0.80)   real 0.58 (0.35-0.79)
+#   O1 alpha share EC (p10-90) 0.37 (0.12-0.68)     0.60 (0.36-0.80)   real 0.58 (0.17-0.79)
 #   O1 alpha share EO          0.14                 0.20               real band 0.05-0.30
 #   Fz alpha share EC / EO     0.17 / 0.10          0.38 / 0.13        feasibility 0.40 / 0.14
 #   exponent EC / EO           1.24 / 1.24          1.24 / 1.24        real band 0.8-1.4
 #   O1-O2 8-13 Hz correlation  0.51 (5/96 below 0)  0.79 (0/96)        real: high
 # ("after" re-measured once per-patch offsets/lags became subject draws and colliding mirror
-# patches were redrawn; neither moved a median by more than 0.01 or 0.1 uV.)
+# patches were redrawn; neither moved a median by more than 0.01 or 0.1 uV. "real" is the committed
+# realism reference, median and p10-p90; the realism test's eyes-closed O1 band, 0.35-0.79, is
+# stricter at the bottom than the real data.)
 #
 # The Cz RMS must be read band-limited: the 1/f background runs down to 0.03 Hz, so more than half
 # of the unfiltered variance lies below 1 Hz and an unfiltered std reads ~19 uV at these settings

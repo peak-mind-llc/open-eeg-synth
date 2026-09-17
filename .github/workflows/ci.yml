@@ -37,3 +37,11 @@ jobs:
         run: python -m build --wheel
       - name: Check wheel data files
         run: unzip -l dist/*.whl | grep -E "colin27_19ch.npz|eog_patterns.npz|NOTICE-colin27.txt|NOTICE-eegmmidb.txt" | wc -l | grep -qx 4
+      - name: Use the wheel in a bare environment
+        # Only the wheel and its edf extra: no dev extras, and not run from the checkout.
+        run: |
+          python -m venv "$RUNNER_TEMP/bare"
+          "$RUNNER_TEMP/bare/bin/pip" install "$(ls "$PWD"/dist/*.whl)[edf]"
+          cd "$RUNNER_TEMP"
+          bare/bin/python -m open_eeg_synth make-case --seed 1 --out case
+          bare/bin/python -c "import glob; from open_eeg_synth.casefile.writer import read_case_truth, render_layers; t = read_case_truth(glob.glob('case/*.truth')[0]); r = render_layers(t, 'eyes_open'); print(t['case_id'], sorted(r.layers))"

@@ -38,11 +38,12 @@ pytest -m "not slow"
   sample-identical to the recorded fixture. If an output change is intended,
   regenerate the fixture with `tools/make_classic_golden.py` and say so in
   `CHANGELOG.md`.
-- **Keep the runtime light.** numpy is the only runtime dependency. Heavier
-  tools, such as MNE for exporting head models, belong in optional extras or
-  developer scripts.
+- **Keep the runtime light.** numpy and scipy are the only runtime
+  dependencies. Heavier tools, such as MNE for exporting head models, belong in
+  optional extras or developer scripts; `edfio` stays an optional extra.
 - **Credit your data.** Any bundled data derived from third-party sources must
-  carry its notice in `THIRD_PARTY_NOTICES.md`.
+  carry its notice in a `NOTICE-<source>.txt` file beside the data, inside the
+  package, and the README's "Data and attribution" section repeats it.
 - **Synthetic is synthetic.** Generated recordings are for teaching, demos and
   testing. Never present them as recordings of a real person.
 - **Golden fingerprint.** Any change that alters the generated samples for a

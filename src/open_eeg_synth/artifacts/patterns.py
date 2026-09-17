@@ -38,8 +38,9 @@ JITTER_CLIP = 1.0
 
 # A channel's jitter step is its sd, capped at this fraction of its own |mean|, so that no z in
 # [-1, 1] flips a channel's sign: on the shipped file the sd exceeds |mean| on 30 of the 64 blink
-# channels and 58 of the 64 heog channels, so the uncapped `mean + z * sign(mean) * sd` would
-# flip (for example) heog T3 but not T4 at z = -1. Below the cap the formula is exact.
+# channels and 54 of the 64 heog channels (the cap applies on 30 and 58), so the uncapped
+# `mean + z * sign(mean) * sd` would flip (for example) heog T3 but not T4 at z = -1. Below the cap
+# the formula is exact.
 _JITTER_CAP = 0.9
 
 # Fallback fit: the k nearest usable present channels, weighted r / d^2.
