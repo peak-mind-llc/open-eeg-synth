@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar
 
@@ -84,12 +84,47 @@ class Occupancy:
 
     def __init__(self) -> None:
         self.spans: list[tuple[int, int]] = []
+        self._span_owners: list[object] = []  # parallel to spans; the artifact that added each
         self._exclusive: list[EventArtifact] = []
         self._advanced_to = 0
 
     def add_exclusive(self, art: EventArtifact) -> None:
-        if art not in self._exclusive:
-            self._exclusive.append(art)
+        """Register `art` as a participant, unless it already is one (a same-occupancy rebind).
+
+        A genuinely new artifact cannot join after this occupancy has already advanced: the
+        artifacts already on it may have committed spans and reported truth for that span, and
+        a late joiner scheduling into it would be attempting to retroactively share time that is
+        already settled. Rebinding an artifact already on this occupancy is always allowed (its
+        own scheduler state was just reset by bind()); nothing here needs to change for it since
+        `advance_exclusive` re-derives everything from each artifact's own current state, not
+        from a shared watermark.
+
+        Deliberately does nothing else and raises before appending, so `EventArtifact.bind` can
+        call this first, before it changes any of its own or the (possible) old Occupancy's
+        state: a refused join must leave everything exactly as it was, not half-migrated.
+        """
+        if art in self._exclusive:
+            return
+        if self._advanced_to > 0:
+            raise ValueError(
+                f"{art!r} cannot join this Occupancy: it has already advanced to sample "
+                f"{self._advanced_to}, and only artifacts bound before the first render may "
+                "share it"
+            )
+        self._exclusive.append(art)
+
+    def remove_exclusive(self, art: EventArtifact) -> None:
+        if art in self._exclusive:
+            self._exclusive.remove(art)
+
+    def drop_spans_of(self, owner: object) -> None:
+        """Remove every span `owner` itself added: a same-occupancy rebind's own stale spans
+        must not linger and keep pushing that artifact's freshly-scheduled events around."""
+        kept = [
+            (s, o) for s, o in zip(self.spans, self._span_owners, strict=True) if o is not owner
+        ]
+        self.spans = [s for s, _ in kept]
+        self._span_owners = [o for _, o in kept]
 
     def next_free(self, start: int, length: int) -> int:
         moved = True
@@ -100,8 +135,9 @@ class Occupancy:
                     start, moved = b, True
         return start
 
-    def add(self, start: int, end: int) -> None:
+    def add(self, start: int, end: int, owner: object = None) -> None:
         self.spans.append((start, end))
+        self._span_owners.append(owner)
 
     def advance_exclusive(self, until: int) -> None:
         """Advance every exclusive artifact sharing this occupancy up to `until`, in onset order.
@@ -110,9 +146,14 @@ class Occupancy:
         a fresh one); whichever peeked onset is chronologically earliest is committed first. Ties
         break on registration order, which is fixed at bind() time and so is independent of
         render-call order or chunk size.
+
+        Always re-derives progress from each artifact's own state rather than short-circuiting
+        on a shared "already advanced" watermark: an artifact already caught up to (or past)
+        `until` just peeks its cached candidate and finds it is not `< until`, which costs an
+        O(1) check, so nothing is skipped for an artifact that legitimately still needs
+        advancing (e.g. one whose own scheduler state was just reset by a same-occupancy
+        rebind).
         """
-        if until <= self._advanced_to:
-            return
         while True:
             best_onset: int | None = None
             best_art: EventArtifact | None = None
@@ -123,7 +164,7 @@ class Occupancy:
             if best_art is None:
                 break
             best_art._consume_next()
-        self._advanced_to = until
+        self._advanced_to = max(self._advanced_to, until)
 
 
 @dataclass
@@ -185,6 +226,10 @@ class EventArtifact(_ParamsMixin, ABC):
         self.rate_by_state = dict(rate_by_state)
         self.min_gap_s = float(min_gap_s)
         self.exclusive = bool(exclusive)
+        # So truth() is well-defined even before bind(), instead of an AttributeError.
+        self._truth: list[TruthRecord] = []
+        self._truth_onset: list[int] = []
+        self._rendered = 0
 
     @property
     def name(self) -> str:
@@ -195,22 +240,37 @@ class EventArtifact(_ParamsMixin, ABC):
 
         Safe to call again to rebind (e.g. reuse of a plug-in instance across conditions): any
         events already scheduled or drawn against a previous context are discarded rather than
-        leaking into the new one.
+        leaking into the new one. Rebinding to a *different* Occupancy than before removes this
+        artifact from the old one's exclusive list, so the old occupancy stops consulting a
+        context that no longer belongs to it. Rebinding to the *same* Occupancy as before also
+        drops this artifact's own previously-committed spans from it, so its freshly-scheduled
+        events are not pushed around by its own stale ones. Joining a *new* Occupancy (whether
+        binding for the first time or rebinding elsewhere) is validated by
+        `Occupancy.add_exclusive` *before* any of the above happens: it rejects a genuinely new
+        artifact joining an occupancy that has already advanced, and does so without mutating
+        anything, so a refused bind leaves this artifact exactly as it was - still bound to, and
+        working against, its previous context - rather than half-migrated.
         """
+        old_occupancy = self.ctx.occupancy if hasattr(self, "ctx") else None
+        if self.exclusive:
+            ctx.occupancy.add_exclusive(self)  # validates (and may raise) before anything else
         self.ctx = ctx
         self.fs = ctx.fs
         self.n_ch = len(ctx.channels)
         self.layer_name = ctx.layer_name
         self._rate_max = max(self.rate_by_state.values(), default=0.0)
         self._pending: list[Event] = []
-        self._truth: list[TruthRecord] = []
-        self._truth_onset: list[int] = []
+        self._truth = []
+        self._truth_onset = []
         self._cand_s = 0.0
         self._next: tuple[float, bool] | None = None
         self._earliest = 0
         self._rendered = 0
         if self.exclusive:
-            ctx.occupancy.add_exclusive(self)
+            if old_occupancy is ctx.occupancy:
+                ctx.occupancy.drop_spans_of(self)
+            elif old_occupancy is not None:
+                old_occupancy.remove_exclusive(self)
 
     @abstractmethod
     def make_event(self, onset: int) -> Event: ...
@@ -228,13 +288,34 @@ class EventArtifact(_ParamsMixin, ABC):
         onset = int(round(t_s * self.fs))
         return onset if onset < until else None
 
+    def _build(self, onset: int) -> Event:
+        """Call make_event and enforce its contract: the Event it returns must start exactly at
+        the onset it was given. Without this, a plug-in whose Event starts before (or after) its
+        onset can make the exclusive rebuild loop below spin forever: `next_free` is asked about
+        a span that does not start where the scheduler thinks it does, can report it as still
+        colliding after a "move", and the plug-in rebuilds an equally-offset Event at the new
+        onset forever.
+        """
+        ev = self.make_event(onset)
+        if ev.onset != onset:
+            raise ValueError(
+                f"{self.kind!r} plug-in's make_event(onset={onset}) returned an Event starting "
+                f"at {ev.onset}; make_event must return an Event whose onset equals the onset "
+                "it was given"
+            )
+        return ev
+
     def _consume_next(self) -> None:
         """Commit the currently peeked candidate: reject it, or build and place its Event.
 
-        The exclusive push (DESIGN §5.2) happens here, against whatever this artifact's own or
-        a peer's earlier commit has already claimed on the shared Occupancy, so the Event this
-        artifact keeps and reports through truth() always reflects its final onset, never the
-        pre-push candidate.
+        An exclusive push (DESIGN §5.2) rebuilds the event at its pushed onset rather than
+        patching the truth record after the fact, so `make_event` always sees - and can react
+        to - the event's actual final onset (state, amplitude, anything else it might compute
+        from `onset`), never a pre-push candidate it was never really scheduled at. Occupancy
+        collisions are resolved against whatever this artifact's own or a peer's earlier commit
+        has already claimed on the shared Occupancy, in the coordinator's global onset order
+        (`Occupancy.advance_exclusive`), so how many times this rebuilds (and so how many rng
+        draws it costs) is itself deterministic, not dependent on chunk size or call order.
         """
         t_s, accept = self._next
         self._next = None
@@ -242,20 +323,14 @@ class EventArtifact(_ParamsMixin, ABC):
         if not accept:
             return
         onset = max(onset, self._earliest)
-        ev = self.make_event(onset)
+        ev = self._build(onset)
         if self.exclusive:
-            moved = self.ctx.occupancy.next_free(onset, ev.block.shape[1])
-            if moved != onset:
-                truth = ev.truth
-                if truth.offset_s is None:
-                    new_truth = replace(truth, onset_s=moved / self.fs)
-                else:
-                    dur = truth.offset_s - truth.onset_s
-                    new_truth = replace(
-                        truth, onset_s=moved / self.fs, offset_s=moved / self.fs + dur
-                    )
-                ev = replace(ev, onset=moved, truth=new_truth)
-            self.ctx.occupancy.add(ev.onset, ev.end)
+            while True:
+                moved = self.ctx.occupancy.next_free(ev.onset, ev.block.shape[1])
+                if moved == ev.onset:
+                    break
+                ev = self._build(moved)
+            self.ctx.occupancy.add(ev.onset, ev.end, owner=self)
         self._pending.append(ev)
         self._truth.append(ev.truth)
         self._truth_onset.append(ev.onset)

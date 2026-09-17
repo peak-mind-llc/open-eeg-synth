@@ -331,6 +331,7 @@ def test_discover_skips_a_broken_entry_point_without_blocking_the_rest(monkeypat
 
     monkeypatch.setattr(registry, "entry_points", lambda group: [BrokenEP(), GoodEP()])
     monkeypatch.setattr(registry, "_discovered", False)
+    monkeypatch.setattr(registry, "_failed_entry_points", {})
     try:
         with pytest.warns(UserWarning, match="broken"):
             registry.discover()
@@ -338,6 +339,67 @@ def test_discover_skips_a_broken_entry_point_without_blocking_the_rest(monkeypat
         assert registry._discovered is True
     finally:
         ARTIFACTS.pop("test_good_third_party", None)
+
+
+def test_discover_warns_on_every_call_and_names_the_failure_in_the_keyerror(monkeypatch):
+    """A broken entry point was previously reported only on the first discover() call (it went
+    quiet after that) and make_artifact's KeyError for an unrelated unknown kind never mentioned
+    it. Both should stay visible on every call."""
+    from open_eeg_synth.artifacts import registry
+
+    class BrokenEP:
+        name = "still_broken"
+
+        def load(self):
+            raise ImportError("still broken")
+
+    monkeypatch.setattr(registry, "entry_points", lambda group: [BrokenEP()])
+    monkeypatch.setattr(registry, "_discovered", False)
+    monkeypatch.setattr(registry, "_failed_entry_points", {})
+
+    with pytest.warns(UserWarning, match="still_broken"):
+        registry.discover()  # first call: attempts loading, records and warns
+    with pytest.warns(UserWarning, match="still_broken"):
+        registry.discover()  # second call: does not re-attempt, but warns again
+
+    with pytest.raises(KeyError, match="still_broken") as exc_info:
+        with pytest.warns(UserWarning, match="still_broken"):
+            registry.make_artifact("nope")
+    assert "still broken" in str(exc_info.value)  # the recorded error text itself
+
+
+def test_discover_flag_is_set_only_after_the_whole_attempt_not_before(monkeypatch):
+    """The "done" flag must reflect having actually finished attempting every entry point, not
+    just having started: if listing the entry points itself blows up partway through (not an
+    individual entry's own load() failing, which is already handled per-entry), a later call
+    should retry rather than silently treat discovery as complete."""
+    from open_eeg_synth.artifacts import registry
+
+    class GoodEP:
+        name = "good"
+
+        def load(self):
+            class Good(EventArtifact):
+                kind = "test_good_partial"
+
+                def make_event(self, onset):
+                    raise NotImplementedError
+
+            return Good
+
+    def bad_entry_points(group):
+        yield GoodEP()
+        raise RuntimeError("entry_points() itself failed partway through")
+
+    monkeypatch.setattr(registry, "entry_points", bad_entry_points)
+    monkeypatch.setattr(registry, "_discovered", False)
+    monkeypatch.setattr(registry, "_failed_entry_points", {})
+    try:
+        with pytest.raises(RuntimeError):
+            registry.discover()
+        assert registry._discovered is False
+    finally:
+        ARTIFACTS.pop("test_good_partial", None)
 
 
 def test_truth_record_to_dict_round_trips_without_rounding():
@@ -362,8 +424,284 @@ def test_event_rejects_a_non_2d_block():
         Event(0, np.zeros(5), truth)  # 1-D, not (n_ch, L)
 
 
+def test_exclusive_push_rebuilds_the_event_at_its_final_onset():
+    """A pushed event must be rebuilt via make_event at its final onset, not just have its truth
+    patched: anything the plug-in derives from `onset` (state, params, ...) must reflect where
+    the event actually landed, not the pre-push candidate (re-review round 2 finding 5a)."""
+
+    class StateAware(EventArtifact):
+        kind = "test_state_aware"
+
+        def __init__(self, *, rate_by_state, exclusive=True, length_s=0.3):
+            super().__init__(rate_by_state=rate_by_state, exclusive=exclusive)
+            self.length_s = length_s
+
+        def make_event(self, onset):
+            n = int(self.length_s * self.fs)
+            state = self.ctx.timeline.state_at(onset / self.fs)
+            truth = TruthRecord(
+                "state_aware",
+                state,
+                None,
+                ("A",),
+                onset / self.fs,
+                (onset + n) / self.fs,
+                1.0,
+                (Remedy.LEAVE,),
+                self.layer_name,
+                {"built_onset": onset, "state": state},
+            )
+            return Event.from_pattern(onset, np.array([1.0]), np.ones(n), truth)
+
+    tl = StateTimeline([StateSegment(0, 10, "eyes_open"), StateSegment(10, 60, "drowsy")], 0.0)
+    occ = Occupancy()
+    occ.add(900, 1100)  # busy span straddling the state boundary at sample 1000
+    art = StateAware(rate_by_state={"eyes_open": 1.0, "drowsy": 1.0})
+    art.bind(_ctx(tl, seed=4, occupancy=occ, name="artifact:test_state_aware"))
+    art._next = (8.73, True)  # candidate at sample 873 (still eyes_open), pushed past [900,1100)
+    art._consume_next()
+    ev = art._pending[0]
+    assert ev.onset == 1100  # pushed to the end of the busy span
+    assert ev.truth.subtype == "drowsy"  # reflects the state AT the final onset, not at 873
+    assert ev.truth.params["built_onset"] == 1100  # make_event really ran again there
+    assert ev.truth.onset_s == 1100 / FS
+
+
+def test_min_gap_after_an_exclusive_push_is_measured_from_the_pushed_event_end():
+    """The refractory gap after a pushed event must be measured from where it actually ends,
+    not from the pre-push candidate's would-be end (re-review round 2 finding 5c, mutation X16:
+    `_earliest = onset + block.shape[1] + gap` using the stale pre-push `onset`)."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    occ.add(0, 500)  # forces a push well past the candidate's own onset
+    art = Pulse(rate_by_state={"eyes_open": 1.0}, min_gap_s=2.0, exclusive=True, length_s=0.3)
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:test_pulse"))
+    art._next = (0.10, True)  # candidate at sample 10, well inside [0, 500)
+    art._consume_next()
+    assert len(art._truth) == 1
+    pushed_onset = art._truth_onset[0]
+    assert pushed_onset >= 500
+    ev_end = pushed_onset + round(0.3 * FS)  # fixed length_s, so this equals ev.end
+    assert art._earliest == ev_end + round(2.0 * FS)
+
+
+def test_truth_boundary_uses_the_stored_integer_onset_not_a_recomputed_float():
+    """At fs=100, `29 / fs * fs` evaluates to 28.999999999999996, just under 29 - the exact
+    reproducer from the re-review's boundary.py. truth() must still exclude an event whose onset
+    is exactly at the render boundary (mutation X6: filtering on the recomputed float again)."""
+    tl = StateTimeline.constant("eyes_open")
+    art = Pulse(rate_by_state={"eyes_open": 1.0}, length_s=0.05)
+    art.bind(_ctx(tl, seed=1))
+    art._next = (0.10, True)  # accepted at sample 10, pushed by the refractory gap to 29
+    art._earliest = 29
+    art.render(0, 29)
+    assert art.truth() == []
+    assert 0.29 * FS < 29  # the float pitfall this guards against
+
+
+def test_rebind_to_the_same_occupancy_after_it_has_advanced_works():
+    """Reusing a plug-in instance (rebinding it to the same Occupancy it was already on, after
+    that occupancy has scheduled events) must actually work, not silently produce nothing."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    art = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+    art.render(0, 3000)
+    assert art.truth()
+
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))  # rebind, same occupancy
+    x = art.render(0, 3000)
+    assert art.truth()
+    assert np.any(x)
+
+
+def test_binding_a_new_artifact_into_an_already_advanced_occupancy_raises():
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    a = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+    a.render(0, 3000)
+
+    b = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    with pytest.raises(ValueError, match="already advanced"):
+        b.bind(_ctx(tl, seed=2, occupancy=occ, name="artifact:b"))
+
+
+def test_rebind_to_a_new_occupancy_removes_it_from_the_old_ones_list():
+    tl = StateTimeline.constant("eyes_open")
+    occ1, occ2 = Occupancy(), Occupancy()
+    art = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    art.bind(_ctx(tl, seed=1, occupancy=occ1, name="artifact:a"))
+    assert art in occ1._exclusive
+
+    art.bind(_ctx(tl, seed=1, occupancy=occ2, name="artifact:a"))
+    assert art not in occ1._exclusive
+    assert art in occ2._exclusive
+
+
+def test_truth_before_bind_returns_empty_list():
+    class Bare(EventArtifact):
+        kind = "test_bare"
+
+        def make_event(self, onset):
+            raise NotImplementedError
+
+    art = Bare(rate_by_state={"eyes_open": 1.0})
+    assert art.truth() == []
+
+
+def test_make_event_must_return_an_event_at_the_given_onset():
+    """A plug-in whose Event starts somewhere other than the onset it was given must raise,
+    naming the plug-in's kind - not spin the exclusive rebuild loop forever colliding with
+    itself at the same sample every time (re-review round 3 finding 1)."""
+
+    class PreRoll(EventArtifact):
+        kind = "test_preroll"
+
+        def make_event(self, onset):
+            n = 10
+            truth = TruthRecord(
+                "preroll",
+                None,
+                None,
+                ("A",),
+                (onset - 5) / self.fs,
+                None,
+                1.0,
+                (Remedy.LEAVE,),
+                self.layer_name,
+                {},
+            )
+            return Event.from_pattern(onset - 5, np.array([1.0]), np.ones(n), truth)
+
+    tl = StateTimeline.constant("eyes_open")
+    art = PreRoll(rate_by_state={"eyes_open": 1.0}, exclusive=True)
+    occ = Occupancy()
+    occ.add(100, 200)  # forces a push, so the rebuild path is exercised too
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:test_preroll"))
+    art._next = (1.5, True)  # candidate at sample 150, inside the busy span
+    with pytest.raises(ValueError, match="test_preroll"):
+        art._consume_next()
+
+
+def test_rebind_to_the_same_occupancy_matches_a_fresh_bind():
+    """A same-occupancy rebind must drop the artifact's own pre-rebind spans - otherwise its new
+    events get pushed around by its own stale ones, and the result depends on how many times it
+    was rebound rather than matching a fresh instance with the same seed (round 3 finding 3)."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    art = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+    art.render(0, 3000)
+    assert art.truth()
+
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))  # rebind, same occupancy
+    x_rebind = art.render(0, 3000)
+    truth_rebind = [t.to_dict() for t in art.truth()]
+
+    fresh = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    fresh.bind(_ctx(tl, seed=1, occupancy=Occupancy(), name="artifact:a"))
+    x_fresh = fresh.render(0, 3000)
+    truth_fresh = [t.to_dict() for t in fresh.truth()]
+
+    assert np.array_equal(x_rebind, x_fresh)
+    assert truth_rebind == truth_fresh
+
+
+def test_refused_bind_leaves_the_artifact_rendering_exactly_as_before():
+    """A refused bind (joining an Occupancy that has already advanced) must not half-migrate the
+    artifact (switch its ctx, drop it from the old occupancy) before the join is validated - it
+    must go on rendering exactly as it would have if the failed bind() call had never happened
+    at all (round 3 finding 4)."""
+    tl = StateTimeline.constant("eyes_open")
+    occ1, occ2 = Occupancy(), Occupancy()
+    a = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    a.bind(_ctx(tl, seed=1, occupancy=occ1, name="artifact:a"))
+    b = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    b.bind(_ctx(tl, seed=2, occupancy=occ2, name="artifact:b"))
+    b.render(0, 1000)  # advances occ2
+
+    with pytest.raises(ValueError):
+        a.bind(_ctx(tl, seed=1, occupancy=occ2, name="artifact:a"))
+
+    assert a.ctx.occupancy is occ1
+    assert a in occ1._exclusive
+    assert a not in occ2._exclusive
+
+    x = a.render(0, 3000)
+    assert np.any(x)
+    assert a.truth()
+
+    control = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    control.bind(_ctx(tl, seed=1, occupancy=Occupancy(), name="artifact:a"))
+    xc = control.render(0, 3000)
+    assert np.array_equal(x, xc)
+    assert [t.to_dict() for t in a.truth()] == [t.to_dict() for t in control.truth()]
+
+
+def test_rebuild_loop_rechecks_after_a_rebuild_that_changes_length():
+    """A rebuild that lands somewhere the event's own natural length is different (here:
+    longer) must have that new placement re-checked against occupancy too - rebuilding once and
+    trusting the result, without re-checking, can still leave an overlap (round 3 finding 5,
+    mirrors the re-reviewer's Z13 mutation)."""
+
+    class Grow(EventArtifact):
+        kind = "test_grow"
+
+        def make_event(self, onset):
+            n = 50 if onset < 200 else 100  # the pushed rebuild is longer
+            truth = TruthRecord(
+                "grow",
+                None,
+                None,
+                ("A",),
+                onset / self.fs,
+                (onset + n) / self.fs,
+                1.0,
+                (Remedy.LEAVE,),
+                self.layer_name,
+                {},
+            )
+            return Event.from_pattern(onset, np.array([1.0]), np.ones(n), truth)
+
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    occ.add(100, 200)
+    occ.add(260, 400)  # the grown rebuild (landing at 200, ending 300) still collides with this
+    art = Grow(rate_by_state={"eyes_open": 1.0}, exclusive=True)
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:test_grow"))
+    art._next = (1.5, True)  # candidate at sample 150, inside [100, 200)
+    art._consume_next()
+    assert art._truth_onset == [400]  # pushed past BOTH busy spans, not just the first
+    assert art._pending[0].end == 500
+    spans = sorted(occ.spans)
+    assert all(spans[i][1] <= spans[i + 1][0] for i in range(len(spans) - 1))
+
+
+def test_exclusive_tie_break_goes_to_the_first_registered_artifact():
+    """When two exclusive artifacts' next candidates land at the exact same sample, the tie must
+    resolve to whichever was registered (bound) first - deterministic, independent of anything
+    else (round 3 finding 5)."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    a = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.5)
+    b = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.5)
+    a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))  # registered first
+    b.bind(_ctx(tl, seed=2, occupancy=occ, name="artifact:b"))
+    a._next = (1.0, True)
+    b._next = (1.0, True)
+    a._rate_max = b._rate_max = 1e-9  # keep any further candidates far away
+    occ.advance_exclusive(101)
+    assert a._truth_onset == [100]  # a claims the tied sample
+    assert b._truth_onset == [150]  # b is pushed past a's [100, 150) claim
+
+
 @pytest.fixture(autouse=True, scope="module")
 def _unregister_test_plugins():
     yield
     ARTIFACTS.pop("test_pulse", None)
     ARTIFACTS.pop("test_no_offset", None)
+    ARTIFACTS.pop("test_state_aware", None)
+    ARTIFACTS.pop("test_bare", None)
+    ARTIFACTS.pop("test_preroll", None)
+    ARTIFACTS.pop("test_grow", None)
