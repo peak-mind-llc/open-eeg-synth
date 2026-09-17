@@ -30,32 +30,32 @@ from open_eeg_synth.channels import CHANNELS_19
 # The Cz RMS must be read band-limited: the 1/f background runs down to 0.03 Hz, so more than half
 # of the unfiltered variance lies below 1 Hz and an unfiltered std reads ~19 uV at these settings
 # (an unfiltered reading is what once made the background look twice too loud). Knobs (the table
-# above describes the Task 12 recipe; the values below are the Task 32 ones, Task 12's in comments):
-_BACKGROUND_RMS_UV = 18.0  # Task 12: 20 -> 18 (Cz 13.9 -> 13.2 uV EC); Task 32 kept 18 (see below)
-_ALPHA_AMP_UV = 37.0  # Task 12: 20 -> 31 (O1 alpha share EC 0.37 -> 0.60); Task 32: 31 -> 37
+# above describes the calibrated recipe before the realism tuning below):
+_BACKGROUND_RMS_UV = 18.0  # was 20: Cz 1-45 Hz RMS 13.9 -> 13.2 uV EC; the realism tuning kept 18
+_ALPHA_AMP_UV = 37.0  # was 20, calibrated to 31 (O1 share EC 0.37 -> 0.60); 37 after the tuning
 # 4 patches of 10 mm put the loudest alpha channel anywhere from P3/P4/Pz to T5/T6 and gave an O1
 # share spread of 0.12-0.68 (p10-p90), far wider than real; 10 patches of 25 mm narrow it to
 # 0.36-0.80 and lift Fz toward the feasibility test's 0.4 (0.33 at 20 mm). `indep` stays 0.6
 # (DESIGN §11.2 wants it no lower); more and wider patches raise the O1-O2 correlation instead.
 _ALPHA_N_PATCHES = 10  # was 4
 _ALPHA_WIDTH_MM = 25.0  # was 10
-# theta, beta and smr kept the feasibility test's values in Task 12.
+# theta, beta and smr kept the feasibility test's values in the calibration.
 #
-# Realism tuning (Task 32, DESIGN §9.1, tests/realism/test_realism.py: 24 seeds, 100-123, 60 s,
+# Realism tuning (DESIGN §9.1, tests/realism/test_realism.py: 24 seeds, 100-123, 60 s,
 # artifacts=()). The zero-lag parts of the model (background, in-phase rhythm patches) set
 # coherence; only the network's delays and the rhythms' per-patch lags make dwPLI, so the tuning
 # moved background variance into the delayed network, slowed its conduction and spread the alpha
-# and beta lags. The Task 12 recipe failed 12 population-median lines (seeds 100-339): dwPLI too low
-# (theta, delta), beta and Laplacian coherence too high.
+# and beta lags. The calibrated recipe failed 12 population-median lines (seeds 100-339): dwPLI too
+# low (theta, delta), beta and Laplacian coherence too high.
 #
-# Theta is fixed by a ruling, not by the realism test: these cases are read by eye, so the
-# frontal-midline theta generator stays focal (12 mm, lag <= 40 ms). A first pass widened it to
-# 40 mm with 100 ms lags; that passed more connectivity lines but halved the Fz theta rhythm,
-# moved the loudest eyes-open theta channel off Fz/Cz and made a LateralImbalance("theta", ...)
-# plant hard to see. Measured for this recipe (eyes closed unless named; average reference):
+# Theta is held focal whatever the connectivity lines say, because these cases are read by eye: a
+# reader expects frontal-midline theta, and a planted theta asymmetry must be visible. The
+# frontal-midline theta generator therefore keeps 12 mm patches and lags of at most 40 ms. Wider,
+# later theta (40 mm, lags up to 100 ms) passed more connectivity lines but halved the Fz theta
+# rhythm, moved the loudest eyes-open theta channel off Fz/Cz and hid LateralImbalance("theta",
+# ...) plants. Measured (average reference; eyes closed unless named):
 #
-#                                               Task 12     first pass    this recipe
-#                                                           (theta 40 mm)
+#                                               calibrated  40 mm theta   this recipe
 #   eyes-open loudest theta ch Fz or Cz (96)    80 %        23 %          65 %
 #   Fz theta-rhythm power (rhythm alone, 96)    20.1 uV^2   10.3 uV^2     21.8 uV^2
 #   theta left x0.4: F4/F3 theta shift (64)     +1.87 dB    +0.88 dB      +1.94 dB (p10 +1.31)
@@ -63,22 +63,36 @@ _ALPHA_WIDTH_MM = 25.0  # was 10
 #
 # (seeds 100-195, or 100-163 for the plant, 60 s. A theta plant is visible in the recording only
 # if the network does not out-shout it: coupling 2.0 with a 0.75 network share and a 19 uV
-# background left Fz/Cz loudest in only 56 %, so coupling is 1.5 and the background Task 12's 18.)
+# background left Fz/Cz loudest in only 56 %, so coupling is 1.5 and the background stays at 18.)
 #
-# The only line that fails is Laplacian theta, nearest distance bin, eyes closed (population 0.531
-# against 0.513): the focal theta patches under Fz, F3, F4 and Cz share a driver, so neighbouring
-# Laplacian channels stay coherent. It is a named known gap in the test, not a wider tolerance.
-# Seeds 100-123 were used to choose these values, so their result is in-sample. Held out (200
-# random 24-seed sets from seeds 124-339): 31 % pass every line outside the known gap, a mean of
-# 1.00 other failing lines (max 4); the lines that fail most are eyes-open bipolar beta nearest bin
-# (43 % of sets, population margin +0.003) and eyes-closed Laplacian beta > 150 mm and nearest
-# bins (36 %, +0.003). Six-seed medians are too noisy to gate on: none of 36 disjoint six-seed
-# sets from seeds 124-339 passes every line.
+# What fails, and where (the test names both lines in KNOWN_GAPS; no tolerance is widened):
+# - Laplacian theta, nearest distance bin, eyes closed: fails on the test seeds (0.536 against
+#   0.513) and at every population median measured (0.531 on seeds 100-339, 0.536 on 340-579,
+#   0.531 on 580-819). The focal theta patches under Fz, F3, F4 and Cz share a driver, so
+#   neighbouring Laplacian channels stay coherent.
+# - Bipolar beta, nearest distance bin, eyes open: passes on the test seeds (0.328 against a lower
+#   limit of 0.317) and on the pool the values were chosen on (margin +0.002), but fails at the
+#   population median of fresh seeds (0.310 on 340-579, 0.308 on 580-819; margins -0.007, -0.009).
+#
+# Seeds 100-339 were all used to choose these values (seeds 100-123 are also the test seeds), so
+# figures on them are in-sample. On that pool (200 random 24-seed sets from 124-339), 31 % of sets
+# pass every line outside the Laplacian theta gap (mean 1.00 other lines, max 4). Out of sample,
+# on fresh seeds the values never saw, 200 random 24-seed sets per pool:
+#   pool      pass outside the     other lines        pass outside     other lines   bipolar beta
+#             Laplacian theta gap  (mean, max)        both gaps        (mean, max)   EO fails in
+#   340-579   9 %                  1.80, 5            26 %             1.18, 4       63 %
+#   580-819   9 %                  1.43, 3            49 %             0.63, 2       80 %
+# The lines failing most often beyond the two gaps are eyes-closed Laplacian beta (> 150 mm or
+# nearest bin; 47 % and 44 % of sets in the two pools) and eyes-closed Laplacian alpha 120-150 mm
+# (33 %, 4 %).
+# Six-seed medians are too noisy to gate on: 10-12 % of disjoint six-seed sets pass outside both
+# gaps.
 #
 # Each change, reverted alone in this recipe: extra population lines (seeds 100-339) and the mean
-# failing lines, known gap included, of 100 random held-out 24-seed sets (this recipe: 1.83).
+# failing lines, Laplacian theta gap included, of 100 random 24-seed sets from the pool the values
+# were chosen on (124-339; this recipe: 1.83).
 #   constant                  was -> now   reverting it alone
-#   background smoothing_mm    20 -> 16     no new line; the known gap misses by more; 2.08
+#   background smoothing_mm    20 -> 16     no new line; the Laplacian theta gap widens; 2.08
 #   background network_frac   0.5 -> 0.75   +2: theta dwPLI EO, bipolar beta nearest bin EO; 3.77
 #   network coupling          1.0 -> 1.5    +1: bipolar beta nearest bin EO; 2.44
 #   network width_mm           15 -> 12     +1: Laplacian beta nearest bin EC; 2.33
@@ -95,13 +109,13 @@ _ALPHA_WIDTH_MM = 25.0  # was 10
 # Beta lags drawn from U(0, 80 ms) span more than a cycle at 19 Hz, so the per-patch lag acts as a
 # random phase: the patches add in power, not in amplitude. Alpha lags up to 50 ms (half a cycle at
 # 10 Hz) likewise lower the realised alpha under the in-phase amplitude convention, which is why
-# the alpha amplitude went up. The O1-O2 8-13 Hz correlation (MNE FIR band-pass, average
-# reference, eyes closed) is 0.68 over 240 seeds (100-339; 1/240 negative) against Task 12's 0.78
-# (1/240 negative); a Butterworth band-pass reads 3/240 negative for the first-pass recipe.
+# the alpha amplitude went up. The O1-O2 8-13 Hz correlation (average reference, eyes closed, 240
+# seeds 100-339) is 0.68 for this recipe against 0.78 calibrated; negative in 1/240 seeds with
+# MNE's FIR band-pass and in 3/240 with a 4th-order Butterworth band-pass (seeds 217, 246, 322).
 #
 # Calibration after tuning, medians over 96 seeds (100-195), measured as above: Cz 1-45 Hz RMS
-# 13.02 uV EC, 12.31 EO (Task 12: 13.22, 12.77); O1 alpha share 0.62 EC, 0.21 EO; exponent 1.25 EC,
-# 1.24 EO.
+# 13.02 uV EC, 12.31 EO (calibrated: 13.22, 12.77); O1 alpha share 0.62 EC, 0.21 EO; exponent 1.25
+# EC, 1.24 EO.
 _BACKGROUND_SMOOTHING_MM = 16.0  # was 20
 _NETWORK_FRAC = 0.75  # was 0.5
 _NETWORK_COUPLING = 1.5  # was 1.0 (the NetworkSpec default)
@@ -109,14 +123,14 @@ _NETWORK_WIDTH_MM = 12.0  # was 15 (the NetworkSpec default)
 _NETWORK_VELOCITY_M_S = 3.5  # was 6.0 (the NetworkSpec default)
 _ALPHA_LAG_MS = 50.0  # was 30
 _THETA_AMP_UV = 7.3  # was 7
-_THETA_WIDTH_MM = 12.0  # the RhythmSpec default; keep it focal (see the ruling above)
-_THETA_LAG_MS = 40.0  # unchanged; keep it <= 40 ms (see the ruling above)
+_THETA_WIDTH_MM = 12.0  # the RhythmSpec default; focal, so frontal-midline theta stays visible
+_THETA_LAG_MS = 40.0  # unchanged; at most 40 ms keeps the theta patches near-coherent
 _BETA_AMP_UV = 5.5  # was 7
 _BETA_LAG_MS = 80.0  # was 35
 
 
 def resting_brain() -> BrainSpec:
-    """The resting model: the feasibility test's structure, calibrated (Task 12) and tuned (32)."""
+    """The resting model: the feasibility test's structure, calibrated and realism-tuned."""
     return BrainSpec(
         background=BackgroundSpec(
             smoothing_mm=_BACKGROUND_SMOOTHING_MM,

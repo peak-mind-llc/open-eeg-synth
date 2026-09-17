@@ -86,13 +86,12 @@ def test_brain_layer_chunk_invariance_and_eyes_closed_alpha():
 
 
 # Calibrated medians of this test's own measurement (brain layer only, nominal head, eyes closed,
-# average reference, 60 s, the 9 seeds below) for the recipe calibrated in Task 12 and re-tuned
-# against the realism reference in Task 32 (recipes.py): O1 alpha share 0.605 (range 0.28-0.77),
-# Cz 1-45 Hz RMS 11.6 uV (10.0-14.6). (Task 12's recipe read 0.567 (0.22-0.76) and 11.9 uV
-# (11.1-13.9).)
+# average reference, 60 s, the 9 seeds below) for the recipe as calibrated and then tuned against
+# the realism reference (recipes.py): O1 alpha share 0.605 (range 0.28-0.77), Cz 1-45 Hz RMS
+# 11.6 uV (10.0-14.6). (Before the realism tuning: 0.567 (0.22-0.76) and 11.9 uV (11.1-13.9).)
 #
 # These pins belong to this fixed seed set, which reads low: the population medians of the same
-# measurement over 270 seeds (0-269) are O1 share 0.65 and Cz 12.7 uV (Task 12: 0.63, 12.8). Four
+# measurement over 270 seeds (0-269) are O1 share 0.65 and Cz 12.7 uV (before: 0.63, 12.8). Four
 # of the nine subjects (seeds 2, 3, 100, 101: shares 0.28-0.39) drew alpha patches that project
 # weakly onto O1, which is where the population's lower tail comes from. Thirty disjoint 9-seed
 # sets from those 270 have medians from 0.45 to 0.83, so a different seed set needs its own pinned
@@ -124,12 +123,12 @@ def test_calibrated_amplitudes_median_across_seeds():
     assert abs(float(np.median(shares)) - CAL_O1_ALPHA_SHARE) < 0.1
 
 
-# A left theta imbalance must stay visible in the recipe's brain layer (Task 32 fix round 1):
+# A left theta imbalance must stay visible in the recipe's brain layer, since cases are read by eye:
 # LateralImbalance("theta", "left", 0.4) raises the F4/F3 theta (4-8 Hz) power ratio (brain layer,
 # nominal head, eyes closed, average reference, 20 s) by a median 2.06 dB over the six seeds below
 # (per seed 1.23-3.07 dB). Population, seeds 0-239: median +2.10 dB, p10 +1.29, min +0.60; the
-# medians of 40 disjoint six-seed sets run from +1.51 to +2.69. The first tuning pass's 40 mm theta
-# patches gave +0.96 (six-seed medians +0.53 to +1.37), which the floor of 1.5 rejects.
+# medians of 40 disjoint six-seed sets run from +1.51 to +2.69. Wider theta patches (40 mm, lags up
+# to 100 ms) gave +0.96 (six-seed medians +0.53 to +1.37), which the floor of 1.5 rejects.
 THETA_IMBALANCE_SHIFT_DB = 2.06
 
 
