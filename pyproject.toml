@@ -26,13 +26,15 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
     "Typing :: Typed",
 ]
-# The runtime needs numpy only. Anything heavier is an optional extra.
-dependencies = ["numpy>=1.24"]
+# The runtime needs numpy and scipy only. Anything heavier is an optional extra.
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
 
 [project.optional-dependencies]
 # Writing case files as EDF.
 edf = ["edfio>=0.4"]
-dev = ["pytest>=7.0", "ruff>=0.6"]
+# Compares the resting recipe with public reference EEG (tests/realism/); dev-only scripts also use it.
+realism = ["mne>=1.6,<1.14", "mne-connectivity>=0.6"]
+dev = ["pytest>=7.0", "ruff>=0.6", "edfio>=0.4", "mne>=1.6,<1.14", "mne-connectivity>=0.6"]
 
 [project.urls]
 Homepage = "https://github.com/peak-mind-llc/open-eeg-synth"
@@ -41,24 +43,33 @@ Issues = "https://github.com/peak-mind-llc/open-eeg-synth/issues"
 Changelog = "https://github.com/peak-mind-llc/open-eeg-synth/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
-path = "src/open_eeg_synth/_version.py"
+path = "src/open_eeg_synth/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/open_eeg_synth"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "tools", "docs", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE"]
+include = ["src", "tests", "tools", "scripts", "docs", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not realism and not slow'"
 markers = [
-    "slow: downloads public reference recordings or runs long simulations (deselect with -m 'not slow')",
+    "realism: compares the resting recipe with public reference EEG; needs mne (run: pytest -m realism)",
+    "slow: takes more than ~10 s",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# The design documents' fenced code blocks are illustrative, not source; ruff's default *.md
+# inclusion shouldn't lint or reformat them.
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# The MNE scripts import after sys.path setup.
+"tests/realism/*" = ["E402"]
+"scripts/*" = ["E402"]

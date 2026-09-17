@@ -1,0 +1,496 @@
+"""A case = one synthetic subject under one or more conditions (DESIGN §7.2)."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import warnings
+from collections import Counter
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+import open_eeg_synth.artifacts  # noqa: F401  (registers the built-in artifact kinds on import)
+from open_eeg_synth._canon import (
+    canonical_fields,
+    inf_from_json,
+    inf_to_json,
+    json_plain,
+    numbers_as_float,
+)
+from open_eeg_synth.brain.layer import BrainLayer, BrainSpec
+from open_eeg_synth.brain.network import NetworkWiring, wire_network
+from open_eeg_synth.brain.placement import placed_centres, region_centres
+from open_eeg_synth.brain.rhythm import RhythmSpec, draw_patch_params
+from open_eeg_synth.brain.state import StateTimeline
+from open_eeg_synth.channels import CHANNELS_19, canonical_labels
+from open_eeg_synth.engine import Engine, Layer, Recording, Transform
+from open_eeg_synth.headmodel import HeadModel, head_model_channels, load_head_model
+from open_eeg_synth.seeds import stream_rng, stream_seed
+from open_eeg_synth.sensor import SensorNoise
+
+if TYPE_CHECKING:
+    from open_eeg_synth.brain.plants import Plant, PlantRecord
+
+
+@dataclass(frozen=True)
+class SensorSpec:
+    white_uv: float = 1.5
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
+
+
+@dataclass(frozen=True)
+class ArtifactSpec:
+    """An artifact kind and its plug-in's constructor arguments (DESIGN §7.2).
+
+    ``params`` are kept exactly as JSON reads them back, so a plug-in receives what was given. The
+    spec's identity (equality, hash, the case digest) reads every number that is not a bool as a
+    float: ``{"x": 50}`` and ``{"x": 50.0}`` are one spec, ``{"x": True}`` and ``{"x": 1}`` two.
+    """
+
+    kind: str
+    params: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
+        object.__setattr__(self, "params", json_plain(dict(self.params)))
+
+    def identity(self) -> dict:
+        """The canonical form the digest reads: ``params`` with numbers as floats."""
+        return {"kind": self.kind, "params": numbers_as_float(self.params)}
+
+    def _key(self) -> str:
+        # JSON keeps what dict equality loses: true is not 1.0
+        return json.dumps(self.identity(), sort_keys=True, separators=(",", ":"))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ArtifactSpec):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self) -> int:
+        return hash(self._key())
+
+
+@dataclass(frozen=True)
+class ConditionSpec:
+    name: str
+    duration_s: float
+    timeline: StateTimeline
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "duration_s": inf_to_json(self.duration_s),  # a stream's condition is unbounded
+            "timeline": self.timeline.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> ConditionSpec:
+        return cls(
+            d["name"], inf_from_json(d["duration_s"]), StateTimeline.from_dict(d["timeline"])
+        )
+
+
+def _default_brain() -> BrainSpec:
+    from open_eeg_synth.recipes import resting_brain
+
+    return resting_brain()
+
+
+def _default_artifacts() -> tuple[ArtifactSpec, ...]:
+    from open_eeg_synth.recipes import ordinary_artifacts
+
+    return ordinary_artifacts()
+
+
+def _default_conditions() -> tuple[ConditionSpec, ...]:
+    """DESIGN §7.2's default: eyes closed then eyes open, 240 s each, constant timelines."""
+    return (
+        ConditionSpec("eyes_closed", 240.0, StateTimeline.constant("eyes_closed", 240.0)),
+        ConditionSpec("eyes_open", 240.0, StateTimeline.constant("eyes_open", 240.0)),
+    )
+
+
+@dataclass(frozen=True)
+class CaseSpec:
+    seed: int
+    fs: float = 256.0
+    channels: tuple[str, ...] = CHANNELS_19
+    head_model: str = "colin27_19ch"
+    perturb_head: bool = True
+    brain: BrainSpec = field(default_factory=_default_brain)
+    plants: tuple[Plant, ...] = ()
+    artifacts: tuple[ArtifactSpec, ...] = field(default_factory=_default_artifacts)
+    sensor: SensorSpec = SensorSpec()
+    conditions: tuple[ConditionSpec, ...] = field(default_factory=_default_conditions)
+    label: str = "synthetic"
+
+    def __post_init__(self) -> None:
+        # Equal specs must serialise identically (digest, case_id): plain Python types only.
+        canonical_fields(self)
+        # Aliases (T7/T8/P7/P8, case-insensitive) canonicalise here too, so a spec built with
+        # either spelling is the very same spec, digest and case id. Canonicalised against the
+        # selected head model's own channel list (head_model_channels reads only that array, not
+        # the full lead field, so this stays cheap even for a spec that is never rendered) — a
+        # future head model with a different channel set must be consulted, not refused against a
+        # hard-wired CHANNELS_19.
+        canon = canonical_labels(self.channels, head_model_channels(self.head_model))
+        object.__setattr__(self, "channels", canon)
+        object.__setattr__(self, "plants", tuple(self.plants))
+        object.__setattr__(self, "artifacts", tuple(self.artifacts))
+        object.__setattr__(self, "conditions", tuple(self.conditions))
+        names = [c.name for c in self.conditions]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate condition names: {names}")
+
+    def to_dict(self) -> dict:
+        from open_eeg_synth.brain.plants import plant_to_dict
+
+        return {
+            "seed": self.seed,
+            "fs": self.fs,
+            "channels": list(self.channels),
+            "head_model": self.head_model,
+            "perturb_head": self.perturb_head,
+            "brain": self.brain.to_dict(),
+            "plants": [plant_to_dict(p) for p in self.plants],
+            "artifacts": [{"kind": a.kind, "params": dict(a.params)} for a in self.artifacts],
+            "sensor": {"white_uv": self.sensor.white_uv},
+            "conditions": [c.to_dict() for c in self.conditions],
+            "label": self.label,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> CaseSpec:
+        from open_eeg_synth.brain.plants import plant_from_dict
+
+        return cls(
+            seed=int(d["seed"]),
+            fs=float(d["fs"]),
+            channels=tuple(d["channels"]),
+            head_model=d["head_model"],
+            perturb_head=bool(d["perturb_head"]),
+            brain=BrainSpec.from_dict(d["brain"]),
+            plants=tuple(plant_from_dict(p) for p in d.get("plants", [])),
+            artifacts=tuple(
+                ArtifactSpec(a["kind"], dict(a.get("params", {}))) for a in d["artifacts"]
+            ),
+            sensor=SensorSpec(**d["sensor"]),
+            conditions=tuple(ConditionSpec.from_dict(c) for c in d["conditions"]),
+            label=d.get("label", "synthetic"),
+        )
+
+    def digest(self) -> str:
+        """8-byte blake2b of the canonical JSON: ``to_dict`` with each artifact's identity form
+        (``ArtifactSpec.identity``), so specs that compare equal digest equally."""
+        d = self.to_dict()
+        d["artifacts"] = [a.identity() for a in self.artifacts]
+        blob = json.dumps(d, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        return hashlib.blake2b(blob, digest_size=8).hexdigest()
+
+
+def compiled_rhythms(spec: CaseSpec) -> tuple[RhythmSpec, ...]:
+    """Base rhythms with the plants' modifiers applied, followed by the plants' own rhythms.
+
+    Every per-rhythm keyed structure (subject draws, time streams, ``BrainLayer.parts``) keys on
+    ``RhythmSpec.name``, so two compiled rhythms sharing a name would collide and silently render
+    as one rhythm at whichever compiled last — raise instead.
+    """
+    from open_eeg_synth.brain.plants import apply_modifiers
+
+    mods, extra = [], []
+    for p in spec.plants:
+        mods.extend(p.modifiers())
+        extra.extend(p.rhythms())
+    out = tuple(apply_modifiers(spec.brain.rhythms, mods)) + tuple(extra)
+    dupes = sorted(n for n, c in Counter(r.name for r in out).items() if c > 1)
+    if dupes:
+        raise ValueError(f"duplicate compiled rhythm name(s): {dupes}")
+    return out
+
+
+@dataclass
+class Subject:
+    head: HeadModel
+    mixing: np.ndarray
+    placements: dict[str, list[int]]
+    f0_hz: dict[str, float]
+    network: NetworkWiring
+    pattern_jitter: dict[str, float]
+    rows: list[int]  # rows of ``head`` that the case records, in CaseSpec.channels order
+    # per rhythm, per patch: own centre-frequency offset (Hz) and driver lag (ms), DESIGN §4.3
+    patch_f0_offsets_hz: dict[str, list[float]] = field(default_factory=dict)
+    patch_lags_ms: dict[str, list[float]] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "head_perturbation": self.head.perturbation,
+            "placements": self.placements,
+            "f0_hz": self.f0_hz,
+            "patch_f0_offsets_hz": self.patch_f0_offsets_hz,
+            "patch_lags_ms": self.patch_lags_ms,
+            "network": self.network.to_dict(),
+            "pattern_jitter": self.pattern_jitter,
+        }
+
+
+# Broken third-party artifact entry points that make_subject has already warned about in this
+# process, keyed by entry point name. registry.discover() itself re-warns on every call (by
+# design, so a direct caller never sees a failure go quiet); make_subject calls it once per case
+# and must not repeat that same warning for every case built afterwards.
+_warned_broken_entry_points: set[str] = set()
+
+
+def make_subject(spec: CaseSpec) -> Subject:
+    """Everything drawn once per subject, on the FULL head model (DESIGN §7.2).
+
+    Patches are placed under every 10-20 site whether or not the case records it, so a
+    four-channel stream and a nineteen-channel case of the same seed share one brain; the
+    recorded channels are selected by ``rows`` when the brain layer renders. The background's
+    smoothing matrix is computed here, once, and every condition's Background reuses it.
+    """
+    head = load_head_model(spec.head_model)
+    if spec.perturb_head:
+        head = head.perturbed(stream_rng(spec.seed, "subject:head"))
+    rows = [head.index(c) for c in spec.channels]
+    mixing = head.smoothed_mixing(spec.brain.background.smoothing_mm)
+    placements: dict[str, list[int]] = {}
+    f0: dict[str, float] = {}
+    offsets: dict[str, list[float]] = {}
+    lags: dict[str, list[float]] = {}
+    for r in compiled_rhythms(spec):
+        rng = stream_rng(spec.seed, f"subject:rhythm:{r.name}")
+        placements[r.name] = (
+            region_centres(head, r.region, r.n_patches, rng)
+            if r.region
+            else placed_centres(head, r.sites, rng)
+        )
+        f0[r.name] = r.f0_hz + (float(rng.normal(0.0, r.f0_jitter_hz)) if r.f0_jitter_hz else 0.0)
+        off, lag = draw_patch_params(r, len(placements[r.name]), rng)
+        offsets[r.name], lags[r.name] = list(off), list(lag)
+    wiring = wire_network(
+        head, spec.brain.network, spec.fs, stream_rng(spec.seed, "subject:network")
+    )
+    # Only a kind whose plug-in actually draws an empirical, per-subject-jittered map
+    # (EventArtifact/TransformArtifact.jitter_pattern is set — Blink "blink", EyeMovement "heog")
+    # gets a jitter drawn and recorded here: jaw EMG's map is a fixed analytic Gaussian and dead
+    # channel has no map at all, so sealing a jitter for them would describe nothing that was
+    # ever rendered. Recorded exactly as artifacts.patterns._full_map/empirical applies it: one
+    # scalar z ~ N(0, 0.6), clipped to [-1, 1] (the same clip every consumer of a jitter enforces),
+    # so the record never disagrees with what was actually rendered. Every other kind's random
+    # draws are unaffected: each kind's own subject stream (subject:artifact:<kind>) is named and
+    # seeded independently of every other stream, so simply not drawing from a non-jittering
+    # kind's stream cannot shift any other kind's draws.
+    from open_eeg_synth.artifacts import patterns
+    from open_eeg_synth.artifacts.registry import ARTIFACTS, discover
+
+    # discover() warns again on every call; only forward a warning this process has not already
+    # shown for that entry point, so building many cases does not repeat it once per case.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        discover()
+    for w in caught:
+        key = str(w.message)
+        if key not in _warned_broken_entry_points:
+            _warned_broken_entry_points.add(key)
+            warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
+
+    jitter = {}
+    for k in sorted({a.kind for a in spec.artifacts}):
+        if getattr(ARTIFACTS.get(k), "jitter_pattern", None) is None:
+            continue
+        z = stream_rng(spec.seed, f"subject:artifact:{k}").normal(0.0, patterns.JITTER_SD)
+        jitter[k] = float(np.clip(z, -patterns.JITTER_CLIP, patterns.JITTER_CLIP))
+    return Subject(head, mixing, placements, f0, wiring, jitter, rows, offsets, lags)
+
+
+def make_engine(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Engine:
+    from open_eeg_synth.artifacts.base import Occupancy, RenderContext
+    from open_eeg_synth.artifacts.registry import make_artifact
+
+    full, fs, seed = subject.head, spec.fs, spec.seed
+    head = full.subset(spec.channels)  # what the amplifier records; artifacts live here
+    layers: list[Layer] = [
+        BrainLayer(
+            compiled_rhythms(spec),
+            spec.brain,
+            full,
+            fs,
+            condition.timeline,
+            subject.mixing,
+            subject.network,
+            subject.placements,
+            subject.f0_hz,
+            seed,
+            condition.name,
+            rows=subject.rows,
+            f0_offsets_hz=subject.patch_f0_offsets_hz,
+            lags_ms=subject.patch_lags_ms,
+        )
+    ]
+    transforms: list[Transform] = []
+    counts = Counter(a.kind for a in spec.artifacts)
+    seen: Counter = Counter()
+    occupancy = Occupancy()
+    for a in spec.artifacts:
+        art = make_artifact(a.kind, **a.params)
+        # i counts instances of this kind only, so adding another kind never moves these draws
+        i = seen[a.kind]
+        seen[a.kind] += 1
+        suffix = f"#{seen[a.kind]}" if counts[a.kind] > 1 else ""
+        prefix = "transform" if art.mode == "transform" else "artifact"
+        # bound before the Engine is built: an artifact's name exists only after bind()
+        art.bind(
+            RenderContext(
+                channels=head.channels,
+                fs=fs,
+                electrode_pos=head.electrode_pos,
+                head=head,
+                timeline=condition.timeline,
+                rng=stream_rng(seed, f"{condition.name}:artifact:{a.kind}:{i}"),
+                subject_rng=stream_rng(seed, f"subject:artifact:{a.kind}"),
+                occupancy=occupancy,
+                layer_name=f"{prefix}:{a.kind}{suffix}",
+            )
+        )
+        (transforms if art.mode == "transform" else layers).append(art)
+    layers.append(
+        SensorNoise(
+            head.n_channels, spec.sensor.white_uv, stream_seed(seed, f"{condition.name}:sensor")
+        )
+    )
+    return Engine(head.channels, fs, layers, transforms)
+
+
+@dataclass
+class Case:
+    spec: CaseSpec
+    case_id: str
+    subject: Subject
+    recordings: dict[str, Recording]
+
+
+def case_id_for(spec: CaseSpec) -> str:
+    h = hashlib.blake2b(f"{spec.seed}:{spec.digest()}".encode(), digest_size=4).hexdigest()
+    return f"synth-{h}"
+
+
+def _plant_is_silent(plant: Plant, states: set[str]) -> bool:
+    """True when ``plant``'s own ``state_gain`` (``FocalSlow``/``RhythmicBursts``; absent on a
+    modifier-only plant) is exactly zero in every state a condition's timeline contains, so it
+    renders nothing there and its record does not belong in that condition's truth."""
+    gain = getattr(plant, "state_gain", None)
+    if not gain:
+        return False
+    return all(gain.get(s, 1.0) == 0.0 for s in states)
+
+
+def _audible_spans_s(gain: dict[str, float], timeline: StateTimeline) -> list[tuple[float, float]]:
+    """The timeline's segments where ``gain`` is not exactly zero, collapsed into spans
+    (adjacent audible segments merged); the complement is where a bursting plant's own
+    ``state_gain`` mutes it (§4.4)."""
+    spans: list[list[float]] = []
+    for seg in timeline.segments:
+        if gain.get(seg.state, 1.0) == 0.0:
+            continue
+        if spans and spans[-1][1] == seg.t0_s:
+            spans[-1][1] = seg.t1_s
+        else:
+            spans.append([seg.t0_s, seg.t1_s])
+    return [(a, b) for a, b in spans]
+
+
+def _confine_bursts_to_gain(
+    bursts: list[list[float]], gain: dict[str, float], timeline: StateTimeline
+) -> list[list[float]]:
+    """Cut ``bursts`` (``[on, off]`` pairs from the gate) to the parts of ``timeline`` where
+    ``gain`` is nonzero: the gate keeps firing through a silent state (``state_gain`` only
+    multiplies the rendered rhythm to zero there), so an interval entirely inside one is dropped
+    and one that straddles a silent stretch is cut to its audible parts (§4.4)."""
+    if not gain or not any(g == 0.0 for g in gain.values()):
+        return bursts
+    spans = _audible_spans_s(gain, timeline)
+    out: list[list[float]] = []
+    for on, off in bursts:
+        for a, b in spans:
+            lo, hi = max(on, a), min(off, b)
+            if lo < hi:
+                out.append([lo, hi])
+    return out
+
+
+def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> list[PlantRecord]:
+    """The plant records of one condition rendered by ``engine`` (DESIGN §4.4).
+
+    A plant that the condition's timeline silences everywhere has no record. A plant whose
+    compiled rhythm is gated in bursts (``RhythmicBursts``) carries this condition's burst
+    intervals as ``params["bursts_s"]``: ``[on, off]`` pairs in seconds, up to what ``engine``
+    has rendered (``Engine.position``), so a chunked rendering gives the same records; an
+    interval the plant's own ``state_gain`` silences entirely is dropped, and one that straddles
+    a silent stretch is cut to its audible part.
+    """
+    states = {seg.state for seg in condition.timeline.segments}
+    brain = next(lay for lay in engine.layers if isinstance(lay, BrainLayer))
+    out: list[PlantRecord] = []
+    for p in spec.plants:
+        if _plant_is_silent(p, states):
+            continue
+        rec = p.record()
+        gated = [r.name for r in p.rhythms() if r.burst is not None]
+        if gated:
+            bursts = sorted(
+                iv for name in gated for iv in brain.burst_intervals_s(name, engine.position)
+            )
+            gain = getattr(p, "state_gain", None) or {}
+            bursts = _confine_bursts_to_gain(bursts, gain, condition.timeline)
+            rec = replace(rec, params={**rec.params, "bursts_s": bursts})
+        out.append(rec)
+    return out
+
+
+def check_case_duration(duration_s: float, what: str) -> None:
+    """A case condition lasts a positive whole number of seconds (EDF records are whole seconds);
+    raise ``ValueError`` naming ``what`` otherwise. Streams are unbounded and never checked."""
+    d = float(duration_s)
+    if not math.isfinite(d):
+        raise ValueError(
+            f"{what} has a non-finite duration ({d!r}); a case condition is rendered whole and "
+            "must last a positive whole number of seconds - use StreamSource for an unbounded, "
+            "chunked recording instead"
+        )
+    if d <= 0 or not d.is_integer():
+        raise ValueError(
+            f"{what} lasts {d!r} s; a case condition must last a positive whole number of "
+            "seconds, because EDF records are whole seconds"
+        )
+
+
+def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Recording:
+    """Render one condition's layers and attach its timeline and its plant records.
+
+    The single per-condition body shared by :func:`make_case` and
+    :func:`casefile.truth.render_layers`, so a truth file's re-rendered plants always match what
+    ``make_case`` produced: both call this, never duplicate its plant-silencing logic.
+    """
+    check_case_duration(condition.duration_s, f"condition {condition.name!r}")
+    eng = make_engine(spec, subject, condition)
+    rec = eng.render_all(int(round(condition.duration_s * spec.fs)))
+    rec.timeline = condition.timeline
+    rec.plants = plant_records(spec, eng, condition)
+    return rec
+
+
+def make_case(spec: CaseSpec) -> Case:
+    for cond in spec.conditions:  # every duration is checked before the subject is drawn
+        check_case_duration(cond.duration_s, f"condition {cond.name!r}")
+    subject = make_subject(spec)
+    recordings = {cond.name: make_recording(spec, subject, cond) for cond in spec.conditions}
+    return Case(spec, case_id_for(spec), subject, recordings)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 
@@ -194,3 +197,29 @@ def test_next_chunk_oversized_raises():
     s = RealisticEEGSynthesizer(["Cz"], 256.0, seed=1)
     with pytest.raises(ValueError, match="exceeds the"):
         s.next_chunk(10_000_000)
+
+
+def test_importing_classic_loads_numpy_only():
+    """The package root imports its layered-engine exports lazily, so a consumer of the classic
+    engine does not pay for scipy or the engine at import (DESIGN §10)."""
+    code = (
+        "import sys, open_eeg_synth.classic, open_eeg_synth.markers\n"
+        "heavy = ('scipy', 'open_eeg_synth.engine', 'open_eeg_synth.case')\n"
+        "print(sorted(m for m in heavy if m in sys.modules))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "[]"
+
+
+def test_package_root_exports_resolve_on_first_use():
+    import open_eeg_synth
+    from open_eeg_synth import StreamSource, make_case, write_case
+    from open_eeg_synth.casefile.writer import write_case as writer_write_case
+    from open_eeg_synth.stream import StreamSource as stream_source
+
+    assert StreamSource is stream_source and write_case is writer_write_case
+    assert callable(make_case)
+    assert all(getattr(open_eeg_synth, name) is not None for name in open_eeg_synth.__all__)
+    assert set(open_eeg_synth.__all__) <= set(dir(open_eeg_synth))
+    with pytest.raises(AttributeError, match="no_such_name"):
+        open_eeg_synth.no_such_name  # noqa: B018
