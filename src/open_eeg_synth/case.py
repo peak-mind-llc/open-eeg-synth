@@ -16,7 +16,7 @@ from open_eeg_synth.brain.network import NetworkWiring, wire_network
 from open_eeg_synth.brain.placement import placed_centres, region_centres
 from open_eeg_synth.brain.rhythm import RhythmSpec, draw_patch_params
 from open_eeg_synth.brain.state import StateTimeline
-from open_eeg_synth.channels import CHANNELS_19
+from open_eeg_synth.channels import CHANNELS_19, canonical_label
 from open_eeg_synth.engine import Engine, Recording
 from open_eeg_synth.headmodel import HeadModel, load_head_model
 from open_eeg_synth.seeds import stream_rng, stream_seed
@@ -71,6 +71,20 @@ def _default_brain() -> BrainSpec:
     return resting_brain()
 
 
+def _default_artifacts() -> tuple[ArtifactSpec, ...]:
+    from open_eeg_synth.recipes import ordinary_artifacts
+
+    return ordinary_artifacts()
+
+
+def _default_conditions() -> tuple[ConditionSpec, ...]:
+    """DESIGN §7.2's default: eyes closed then eyes open, 240 s each, constant timelines."""
+    return (
+        ConditionSpec("eyes_closed", 240.0, StateTimeline.constant("eyes_closed", 240.0)),
+        ConditionSpec("eyes_open", 240.0, StateTimeline.constant("eyes_open", 240.0)),
+    )
+
+
 @dataclass(frozen=True)
 class CaseSpec:
     seed: int
@@ -80,14 +94,19 @@ class CaseSpec:
     perturb_head: bool = True
     brain: BrainSpec = field(default_factory=_default_brain)
     plants: tuple = ()  # Plant instances (Task 21)
-    artifacts: tuple[ArtifactSpec, ...] = ()
+    artifacts: tuple[ArtifactSpec, ...] = field(default_factory=_default_artifacts)
     sensor: SensorSpec = SensorSpec()
-    conditions: tuple[ConditionSpec, ...] = ()
+    conditions: tuple[ConditionSpec, ...] = field(default_factory=_default_conditions)
     label: str = "synthetic"
 
     def __post_init__(self) -> None:
         # Equal specs must serialise identically (digest, case_id): plain Python types only.
         canonical_fields(self)
+        # Aliases (T7/T8/P7/P8, case-insensitive) canonicalise here too, so a spec built with
+        # either spelling is the very same spec, digest and case id.
+        object.__setattr__(
+            self, "channels", tuple(canonical_label(c, CHANNELS_19) for c in self.channels)
+        )
         object.__setattr__(self, "plants", tuple(self.plants))
         object.__setattr__(self, "artifacts", tuple(self.artifacts))
         object.__setattr__(self, "conditions", tuple(self.conditions))
@@ -214,8 +233,13 @@ def make_subject(spec: CaseSpec) -> Subject:
     wiring = wire_network(
         head, spec.brain.network, spec.fs, stream_rng(spec.seed, "subject:network")
     )
+    # Recorded exactly as artifacts.patterns._full_map/empirical applies it: one scalar
+    # z ~ N(0, 0.6), clipped to [-1, 1] (the same clip every consumer of a subject pattern
+    # jitter enforces), so the record never disagrees with what was actually rendered.
     jitter = {
-        k: float(stream_rng(spec.seed, f"subject:artifact:{k}").normal(0.0, 0.6))
+        k: float(
+            np.clip(stream_rng(spec.seed, f"subject:artifact:{k}").normal(0.0, 0.6), -1.0, 1.0)
+        )
         for k in sorted({a.kind for a in spec.artifacts})
     }
     return Subject(head, mixing, placements, f0, wiring, jitter, rows, offsets, lags)

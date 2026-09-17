@@ -32,6 +32,7 @@ from open_eeg_synth.case import (
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.headmodel import HeadModel
 from open_eeg_synth.recipes import resting_case
+from open_eeg_synth.seeds import stream_rng
 from tests.helpers import band_power
 
 
@@ -321,6 +322,67 @@ def test_plant_rhythms_are_subject_properties_too():
         assert list(ec.f0_offsets_hz) == subj.patch_f0_offsets_hz[r.name]
         assert list(ec.lags_ms) == subj.patch_lags_ms[r.name]
         assert len(subj.patch_lags_ms[r.name]) == len(subj.placements[r.name])
+
+
+def test_bare_case_spec_defaults_follow_design_and_render():
+    """DESIGN §7.2: CaseSpec()'s brain/artifacts/conditions defaults are recipes.resting_brain(),
+    recipes.ordinary_artifacts() and eyes_closed/eyes_open 240 s constant timelines, via lazy
+    default factories (case.py's existing ``_default_brain`` pattern) that avoid the
+    case<->recipes import cycle (Task 20 controller ruling 1)."""
+    from open_eeg_synth.recipes import ordinary_artifacts, resting_brain
+
+    spec = CaseSpec(seed=1)
+    assert spec.brain == resting_brain()
+    assert spec.artifacts == ordinary_artifacts()
+    assert [c.name for c in spec.conditions] == ["eyes_closed", "eyes_open"]
+    assert [c.duration_s for c in spec.conditions] == [240.0, 240.0]
+    assert [c.timeline.segments[0].state for c in spec.conditions] == ["eyes_closed", "eyes_open"]
+    assert all(len(c.timeline.segments) == 1 for c in spec.conditions)  # constant timelines
+
+    # a bare spec renders both conditions with the ordinary artifacts (short override: fast test;
+    # tests/test_perf.py exercises the full 240 s x2 default duration under the perf budget)
+    short = dataclasses.replace(
+        spec,
+        conditions=tuple(
+            dataclasses.replace(c, duration_s=2.0, timeline=StateTimeline.constant(c.name, 2.0))
+            for c in spec.conditions
+        ),
+    )
+    case = make_case(short)
+    assert set(case.recordings) == {"eyes_closed", "eyes_open"}
+    for rec in case.recordings.values():
+        assert set(rec.layers) == {
+            "brain",
+            "artifact:blink",
+            "artifact:eye_movement",
+            "artifact:emg",
+            "sensor",
+        }
+
+
+def test_channel_aliases_canonicalise_on_construction():
+    """T7/T8/P7/P8 (case-insensitive) canonicalise to T3/T4/T5/T6 on CaseSpec construction, so
+    the two spellings give the same spec, digest and case id (Task 20 controller ruling 2)."""
+    aliased = tuple({"T3": "t7", "T4": "T8", "T5": "p7", "T6": "P8"}.get(c, c) for c in CHANNELS_19)
+    a = resting_case(15, duration_s=1.0, artifacts=(), channels=aliased)
+    b = resting_case(15, duration_s=1.0, artifacts=(), channels=CHANNELS_19)
+    assert a.channels == CHANNELS_19 == b.channels
+    assert a == b
+    assert a.digest() == b.digest()
+    assert case_id_for(a) == case_id_for(b)
+
+
+def test_pattern_jitter_is_recorded_clipped_like_patterns_py():
+    """Subject.pattern_jitter must record the [-1, 1]-clipped z that
+    artifacts.patterns.empirical actually applies (Task 20 controller ruling 4), not the raw
+    normal draw: seed 32's emg jitter draws about -2.06, well outside the clip range patterns.py
+    enforces on every z it consumes, so an unclipped record would silently disagree with the
+    signal that was actually rendered."""
+    spec = resting_case(32, duration_s=1.0, artifacts=(ArtifactSpec("emg"),))
+    subject = make_subject(spec)
+    raw = float(stream_rng(spec.seed, "subject:artifact:emg").normal(0.0, 0.6))
+    assert abs(raw) > 1.0  # sanity: this seed actually exercises the clip
+    assert subject.pattern_jitter["emg"] == pytest.approx(float(np.clip(raw, -1.0, 1.0)))
 
 
 def test_case_with_plants_is_chunk_invariant():

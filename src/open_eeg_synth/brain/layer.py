@@ -21,6 +21,11 @@ class BrainSpec:
     network: NetworkSpec = NetworkSpec()
     rhythms: tuple[RhythmSpec, ...] = ()
 
+    def __post_init__(self) -> None:
+        # A rhythms list must normalise to a tuple: from_dict always returns a tuple, so a spec
+        # built with a list would otherwise fail to compare equal to its own JSON round trip.
+        object.__setattr__(self, "rhythms", tuple(self.rhythms))
+
     def to_dict(self) -> dict:
         return {
             "background": asdict(self.background),
@@ -60,7 +65,11 @@ class BrainLayer:
         lags_ms: dict[str, Sequence[float]] | None = None,
     ) -> None:
         """``f0_offsets_hz``/``lags_ms`` are the subject's per-patch values by rhythm name
-        (``make_subject``); a rhythm missing from them draws its own from its seed."""
+        (``make_subject``), and every rhythm built here must have both: a BrainLayer is always
+        built in the engine path (``make_engine``), which always supplies the subject's full
+        per-rhythm draws, so a rhythm missing from them means the caller built this BrainLayer
+        outside that path and is not sharing the subject's draws — raise rather than silently
+        drawing a fresh one, which only a standalone ``Rhythm`` may do."""
         f0_offsets_hz, lags_ms = f0_offsets_hz or {}, lags_ms or {}
         self.rows = None if rows is None else list(rows)
         self.parts: list = [
@@ -81,6 +90,12 @@ class BrainLayer:
             ),
         ]
         for r in rhythms:
+            if r.name not in f0_offsets_hz or r.name not in lags_ms:
+                raise ValueError(
+                    f"BrainLayer: rhythm {r.name!r} is missing the subject's per-patch "
+                    "f0_offsets_hz/lags_ms; only a standalone Rhythm may draw its own (build "
+                    "this BrainLayer through make_subject/make_engine, which always supply them)"
+                )
             self.parts.append(
                 Rhythm(
                     head,
@@ -90,8 +105,8 @@ class BrainLayer:
                     placements[r.name],
                     f0_hz[r.name],
                     stream_seed(case_seed, f"{condition}:rhythm:{r.name}"),
-                    f0_offsets_hz=f0_offsets_hz.get(r.name),
-                    lags_ms=lags_ms.get(r.name),
+                    f0_offsets_hz=f0_offsets_hz[r.name],
+                    lags_ms=lags_ms[r.name],
                 )
             )
 

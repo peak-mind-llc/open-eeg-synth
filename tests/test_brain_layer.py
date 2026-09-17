@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from open_eeg_synth.brain.layer import BrainLayer, BrainSpec
 from open_eeg_synth.brain.network import wire_network
@@ -168,6 +169,64 @@ def test_rows_selects_full_output_columns():
     subset = subset_layer.render(0, n)
     assert subset.shape == (len(rows), n)
     assert np.array_equal(subset, full[rows])
+
+
+def test_brain_layer_raises_without_subject_offsets_and_lags():
+    """Only a standalone Rhythm may draw its own per-patch offsets/lags; a BrainLayer built in
+    the engine path (make_subject/make_engine) must always be given the subject's draws for
+    every rhythm, and raise a clear error naming the rhythm if one is missing, instead of
+    silently falling back to Rhythm's own draw (Task 20 controller ruling 3)."""
+    spec = resting_brain()
+    head = load_head_model()
+    mixing = head.smoothed_mixing(spec.background.smoothing_mm)
+    wiring = wire_network(head, spec.network, FS, stream_rng(1, "subject:network"))
+    tl = StateTimeline.constant("eyes_closed")
+    placements, f0, offsets, lags = {}, {}, {}, {}
+    for r in spec.rhythms:
+        rng = stream_rng(1, f"subject:rhythm:{r.name}")
+        placements[r.name] = (
+            region_centres(head, r.region, r.n_patches, rng)
+            if r.region
+            else placed_centres(head, r.sites, rng)
+        )
+        f0[r.name] = r.f0_hz
+        offsets[r.name], lags[r.name] = draw_patch_params(r, len(placements[r.name]), rng)
+
+    # entirely omitted: the first rhythm (alpha) is named in the error
+    with pytest.raises(ValueError, match="alpha"):
+        BrainLayer(
+            spec.rhythms, spec, head, FS, tl, mixing, wiring, placements, f0, 1, "eyes_closed"
+        )
+
+    # one rhythm missing from an otherwise-complete dict: that rhythm is named
+    partial = dict(offsets)
+    del partial["theta"]
+    with pytest.raises(ValueError, match="theta"):
+        BrainLayer(
+            spec.rhythms,
+            spec,
+            head,
+            FS,
+            tl,
+            mixing,
+            wiring,
+            placements,
+            f0,
+            1,
+            "eyes_closed",
+            f0_offsets_hz=partial,
+            lags_ms=lags,
+        )
+
+
+def test_brain_spec_normalises_rhythms_list_to_tuple():
+    """A rhythms list must normalise to a tuple on construction, or equality does not survive a
+    JSON round trip (``from_dict`` always returns a tuple) — Task 20 controller ruling 3."""
+    spec = resting_brain()
+    listed = BrainSpec(spec.background, spec.network, list(spec.rhythms))
+    assert isinstance(listed.rhythms, tuple)
+    assert listed == spec
+    assert listed == BrainSpec.from_dict(listed.to_dict())
 
 
 def test_network_layer_contributes_to_brain_output():
