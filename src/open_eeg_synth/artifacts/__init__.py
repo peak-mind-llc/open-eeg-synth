@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# built-in kinds (each module registers itself on import) — extended in Tasks 16-19
+from open_eeg_synth.artifacts import blink  # noqa: F401
 from open_eeg_synth.artifacts.base import (  # noqa: F401
     Event,
     EventArtifact,
@@ -12,5 +14,3 @@ from open_eeg_synth.artifacts.base import (  # noqa: F401
     TruthRecord,
 )
 from open_eeg_synth.artifacts.registry import ARTIFACTS, make_artifact, register  # noqa: F401
-
-# built-in kinds (each module registers itself on import) — extended in Tasks 16-19
