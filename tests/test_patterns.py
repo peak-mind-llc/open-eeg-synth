@@ -119,20 +119,51 @@ def test_empirical_rng_path_matches_known_draw(fake_eog):
     assert not np.array_equal(got, got_wide)
 
 
-def test_empirical_fallback_least_squares_scaled_to_file_not_saturated(fake_eog):
-    """A fallback channel is scaled to the file's own units, not maxed to +-1 on its own."""
+def test_empirical_fallback_reviewer_cases_fail_on_the_old_normalisation(fake_eog):
+    """The re-review's exact cases, where the requested set has no dominant present channel to
+    coincidentally mask a wrong fallback: fitting per missing channel to its nearest present
+    channel(s) (not a per-request-set max-1 normalisation, and not one global fit shared by every
+    missing channel) actually changes the answer here, unlike a case where Fp1 is present and
+    already dominates either way.
+    """
     head = load_head_model()
     pos = dict(zip(CHANNELS_19, head.electrode_pos, strict=True))
+
+    # blink on [O1, O2, Oz], Oz missing. The old per-request-set max-1 normalisation gave
+    # [-0.05, -0.05, -1.0] (Oz saturated to the array's own max). Fitting Oz to its single
+    # nearest present channel keeps it the same *raw* size as O1/O2, so after the (unavoidable)
+    # final max-1 normalisation over just these three, all three end up close together.
     oz = np.array([0.0, -0.11, 0.0])
     posterior = patterns.empirical(
-        "blink", ["Fp1", "O1", "Oz"], electrode_pos=np.array([pos["Fp1"], pos["O1"], oz]), z=0.0
+        "blink", ["O1", "O2", "Oz"], electrode_pos=np.array([pos["O1"], pos["O2"], oz]), z=0.0
     )
-    # Oz sits with the small posterior channels, nowhere near the frontal peak that dominates
-    # the requested set - a locally-maxed fallback would instead put it at +-1.
-    assert posterior[0] == 1.0
-    assert np.isclose(posterior[2], -0.0176, atol=0.002)
-    assert abs(posterior[2]) < abs(posterior[1]) * 2  # comparable to, not orders above, O1
+    assert np.allclose(posterior, [-0.9260, -0.9260, -1.0], atol=0.001)
 
+    # heog on [Fp1, Fp2, F7, F8, F9], F9 missing. The old normalisation gave F9 ~= 0.166 of F7;
+    # a single shared fit across all four present channels (round 1) gave ~0.10 of F7 (Fp1's much
+    # larger analytic response dominates an unweighted fit against three other anchors). F9 sits
+    # 3x closer to F7 than to any other present channel, and F7's own analytic value is well
+    # above the stability floor, so the fit uses F7 alone - matching the analytic model's own
+    # F9/F7 ratio of ~0.86, which a fit diluted by Fp1/Fp2 could not reach.
+    f9 = np.array([-0.085, 0.030, -0.030])
+    frontal = patterns.empirical(
+        "heog",
+        ["Fp1", "Fp2", "F7", "F8", "F9"],
+        electrode_pos=np.array([pos["Fp1"], pos["Fp2"], pos["F7"], pos["F8"], f9]),
+        z=0.0,
+    )
+    assert np.allclose(frontal[:4], [-0.4, 0.4, -1.0, 1.0])
+    assert np.isclose(frontal[4], 0.8638 * frontal[2], atol=0.001)
+
+
+def test_empirical_fallback_frontal_case_with_a_present_dominant_channel(fake_eog):
+    """A less adversarial case (Fp1 present and dominant either way) kept from fix round 1, as a
+    second data point once the fit is anchored on nearest present channels rather than all of
+    them: F3 (present) is F9's nearest neighbour among [Fp1, Fp2, F3], but F3's own analytic
+    value is close enough to the floor that the fit still widens to include Fp1.
+    """
+    head = load_head_model()
+    pos = dict(zip(CHANNELS_19, head.electrode_pos, strict=True))
     f9 = np.array([-0.085, 0.030, -0.030])
     frontal = patterns.empirical(
         "blink",
@@ -141,14 +172,20 @@ def test_empirical_fallback_least_squares_scaled_to_file_not_saturated(fake_eog)
         z=0.0,
     )
     assert frontal[0] == frontal[1] == 1.0
-    assert np.isclose(frontal[3], -0.0884, atol=0.002)
+    assert np.isclose(frontal[3], -0.0864, atol=0.001)
 
 
 def test_empirical_fallback_uses_max_normalisation_when_no_channel_is_in_file(fake_eog):
-    """With no anchor to fit against, the fallback keeps the analytic model's own max-1 scale."""
+    """With no anchor to fit against, the fallback keeps the analytic model's own max-1 scale -
+    checked across two missing channels at different distances from the source, so a broken
+    implementation that e.g. always returned +-1 (or 0) for every missing channel would be
+    caught, unlike a single-channel request which is always +-1 regardless of the algorithm."""
     f9 = np.array([-0.085, 0.030, -0.030])
-    out = patterns.empirical("blink", ["F9"], electrode_pos=np.array([f9]), z=0.0)
-    assert out[0] == -1.0
+    oz = np.array([0.0, -0.11, 0.0])
+    out = patterns.empirical("blink", ["F9", "Oz"], electrode_pos=np.array([f9, oz]), z=0.0)
+    expected = patterns._FALLBACK["blink"](np.array([f9, oz]))
+    assert np.allclose(out, expected)
+    assert out[0] == -1.0 and not np.isclose(out[1], -1.0)  # a real ratio, not both saturated
 
 
 def test_empirical_real_file_blink_peaks_frontal_heog_opposite_f7_f8():
