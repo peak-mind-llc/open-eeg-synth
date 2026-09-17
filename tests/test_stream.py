@@ -1,7 +1,11 @@
+import math
+import time
+
 import numpy as np
 import pytest
 
 from open_eeg_synth.brain.state import StateTimeline
+from open_eeg_synth.case import CaseSpec, ConditionSpec
 from open_eeg_synth.channels import UnknownChannelError
 from open_eeg_synth.markers import MarkerSchedule
 from open_eeg_synth.stream import StreamSource
@@ -133,3 +137,46 @@ def test_markers_and_truth():
     for _ in range(int(60 * 256 / 32)):
         s3.next_chunk(32)
     assert any(t.kind == "blink" for t in s3.truth)
+
+
+def test_next_chunk_is_fast_enough_for_a_live_mock_amplifier():
+    """S1: a mock amplifier calls next_chunk 8-10 times a second, so each call has roughly
+    100-125 ms to run in. 32 samples at 256 Hz is 125 ms of signal; construction (~0.5 s, the
+    head perturbation and mixing-matrix smoothing) happens once up front and is excluded here."""
+    s = StreamSource(Q21, 256.0, seed=13)
+    n_calls = 200
+    t0 = time.perf_counter()
+    for _ in range(n_calls):
+        s.next_chunk(32)
+    elapsed = time.perf_counter() - t0
+    assert elapsed / n_calls < 0.025
+
+
+def test_seed_none_reproduces_its_first_chunk_from_its_own_seed():
+    """S4: a StreamSource built with seed=None draws and exposes a fresh seed (.seed); a second
+    StreamSource built with that seed must reproduce the first one's first chunk exactly, so a
+    recording application can log `.seed` and replay a session byte for byte."""
+    a = StreamSource(Q21, 256.0)
+    first = a.next_chunk(64)
+    b = StreamSource(Q21, 256.0, seed=a.seed)
+    assert np.array_equal(first, b.next_chunk(64))
+
+
+def test_unbounded_stream_condition_serialises_and_digests():
+    """S3: StreamSource builds its ConditionSpec with duration_s=math.inf (an endless stream has
+    no fixed length). CaseSpec.to_dict/from_dict and .digest() already turn an infinite duration
+    into JSON null and back (case.ConditionSpec.to_dict, _canon.inf_to_json/inf_from_json), so no
+    change was needed for this: a case built with an unbounded condition still serialises,
+    round-trips and digests like any other case. StreamSource itself never asks for a case id or
+    writes a case file, so this is a locking test for the plumbing it depends on, not new
+    behaviour StreamSource adds."""
+    spec = CaseSpec(
+        seed=1,
+        fs=256.0,
+        channels=("O1",),
+        conditions=(ConditionSpec("stream", math.inf, StateTimeline.constant("eyes_open")),),
+    )
+    d = spec.to_dict()
+    assert d["conditions"][0]["duration_s"] is None
+    assert spec.digest()  # json.dumps(..., allow_nan=False) must not raise on the inf duration
+    assert CaseSpec.from_dict(d) == spec
