@@ -10,7 +10,7 @@ from open_eeg_synth.headmodel import load_head_model
 # sd is deliberately NOT proportional to mean (unlike a naive `k * |mean|`), so a wrong jitter
 # formula (ignoring sd, dropping sign(mean), or drawing z at the wrong scale) changes the
 # max-normalised output rather than cancelling out in the final normalisation. Every sd here is
-# below 0.9 x |mean| (the cap), so these fake maps exercise the ruled formula itself.
+# below 0.9 x |mean| (the cap), so these fake maps exercise the exact jitter formula itself.
 _FAKE_NAMES = (*CHANNELS_19, "T9", "T10")
 _BLINK_MEAN = np.zeros(21)
 _BLINK_MEAN[[0, 1]] = 1.0  # Fp1, Fp2
@@ -118,7 +118,7 @@ def test_analytic_focal_pinned_gaussian_value():
 
 
 def test_analytic_focal_is_the_raw_gaussian_whatever_is_requested():
-    """P30: no normalisation over the requested electrodes - an electrode 10 mm from the centre
+    """No normalisation over the requested electrodes - an electrode 10 mm from the centre
     reads exp(-(10/35)^2 / 2) even when it is the only one asked for."""
     centre = np.array([0.0, 0.0, 0.0])
     pos = np.array([[0.010, 0.0, 0.0], [0.0, 0.050, 0.0], [0.0, 0.0, 0.070]])
@@ -129,7 +129,7 @@ def test_analytic_focal_is_the_raw_gaussian_whatever_is_requested():
 
 def test_analytic_dipole_pinned_and_inverse_square_falloff():
     """Along a fixed direction, doubling the distance divides the dipole value by exactly 4, and
-    the unit is the dipole's largest |value| over the 19-channel template head (P30)."""
+    the unit is the dipole's largest |value| over the 19-channel template head."""
     head = load_head_model()
     origin, moment = np.zeros(3), np.array([1.0, 0.0, 0.0])
     pos = np.array([[0.1, 0.0, 0.0], [0.2, 0.0, 0.0]])
@@ -141,7 +141,7 @@ def test_analytic_dipole_pinned_and_inverse_square_falloff():
 
 
 def test_analytic_dipole_is_normalised_over_the_full_template_head():
-    """P30: asking for a subset gives the subset's entries of the full-head answer, so two far
+    """Asking for a subset gives the subset's entries of the full-head answer, so two far
     posterior electrodes stay small instead of being stretched to +-1."""
     head = load_head_model()
     full = patterns.analytic_dipole(patterns.EYE_CENTRE, (0.0, 0.3, 1.0), head.electrode_pos)
@@ -152,7 +152,7 @@ def test_analytic_dipole_is_normalised_over_the_full_template_head():
 
 
 def test_eye_maps_are_referenced_to_t9_t10(tmp_path, monkeypatch):
-    """P28: the mean of the file's T9 and T10 is subtracted from each mean map at load."""
+    """The mean of the file's T9 and T10 is subtracted from each mean map at load."""
     _write_fake(tmp_path, monkeypatch, t9=0.1, t10=0.3)
     try:
         chs = ["Fp1", "F3", "O1", "Cz", "T9", "T10"]
@@ -164,8 +164,8 @@ def test_eye_maps_are_referenced_to_t9_t10(tmp_path, monkeypatch):
         patterns.load_eog_patterns.cache_clear()
 
 
-def test_real_file_referenced_maps_match_the_ruling(real_eog):
-    """P28's stated values for the real file, T9/T10-referenced and max-normalised."""
+def test_real_file_referenced_maps_match_pinned_values(real_eog):
+    """The stated reference values for the real file, T9/T10-referenced and max-normalised."""
     names, blink = _full("blink")
     want = {"Fp1": 1.00, "Fp2": 0.99, "F7": 0.43, "F8": 0.37, "F3": 0.33, "Fz": 0.29}
     want |= {"F4": 0.31, "C3": 0.08, "O1": -0.03, "O2": -0.03, "Pz": 0.01}
@@ -197,7 +197,7 @@ def test_empirical_selects_channels_jitters_and_falls_back(fake_eog):
 
 
 def test_empirical_jitter_keeps_each_channels_sign(fake_eog):
-    """P29: mean + z * sign(mean) * sd. A negative channel grows more negative with z, exactly
+    """mean + z * sign(mean) * sd. A negative channel grows more negative with z, exactly
     as a positive one grows more positive (the old `mean + z * sd` shrank it instead)."""
     chs = ["Fp1", "F3", "O1", "F8", "F7"]
     plus = patterns.empirical("blink", chs[:3], z=1.0)
@@ -241,7 +241,7 @@ def test_empirical_rng_path_matches_known_draw(fake_eog):
 
 @pytest.mark.parametrize("z", [-1.0, -0.5, 0.0, 0.5, 1.0])
 def test_real_file_jitter_keeps_signs_and_heog_antisymmetry(real_eog, z):
-    """P29 on the real file, whose spreads exceed |mean| on 30 blink and 58 heog channels: no z in
+    """On the real file, whose spreads exceed |mean| on 30 blink and 58 heog channels: no z in
     [-1, 1] may flip (or zero) a channel, so opposite-sign mirror pairs stay opposite and F7/F8
     stay balanced (the old `mean + z * sd` gave |F7|/|F8| = 0.21 at z = 1)."""
     names, base = _full("heog", 0.0)
@@ -260,7 +260,7 @@ def test_real_file_jitter_keeps_signs_and_heog_antisymmetry(real_eog, z):
 
 
 def test_subset_request_returns_full_map_values(real_eog, tmp_path, monkeypatch):
-    """P30: a 4-channel request returns the numbers those channels have in the whole map, whether
+    """A 4-channel request returns the numbers those channels have in the whole map, whether
     or not the map's peak is among them."""
     for name in ("blink", "heog"):
         for z in (-0.8, 0.0, 0.6):
@@ -292,14 +292,14 @@ def test_real_file_maps_hold_over_many_subjects(real_eog):
 
 
 def test_empirical_fallback_pinned_cases(fake_eog):
-    """The re-review's cases, pinned for the smooth fit (fix round 4). A fallback is scaled to its
-    nearest present channels, not max-normalised over the request.
+    """Cases pinned for the smooth fit. A fallback is scaled to its nearest present channels, not
+    max-normalised over the request.
 
-    blink on [O1, O2, Oz], Oz missing: Oz keeps O1's size (-0.0530 vs -0.05; the old per-request
-    normalisation saturated it at -1). heog on [Fp1, Fp2, F7, F8, F9], F9 missing: F9 is 0.766 of
-    F7. The grid version anchored on F7 alone and gave the dipole's own F9/F7 ratio, 0.864; the
+    blink on [O1, O2, Oz], Oz missing: Oz keeps O1's size (-0.0530 vs -0.05; per-request
+    normalisation would instead saturate it at -1). heog on [Fp1, Fp2, F7, F8, F9], F9 missing:
+    F9 is 0.766 of F7. Anchoring on F7 alone gives the dipole's own F9/F7 ratio, 0.864; the
     smooth fit also gives Fp1 and Fp2 their 1/d^2 share (they are 3x further away), which moves
-    it to 0.766, inside the +-0.1 the ruling allows."""
+    it to 0.766, within 0.1 of that."""
     head = load_head_model()
     pos = dict(zip(CHANNELS_19, head.electrode_pos, strict=True))
     oz = np.array([0.0, -0.11, 0.0])
@@ -321,10 +321,10 @@ def test_empirical_fallback_pinned_cases(fake_eog):
 
 
 def test_empirical_fallback_frontal_case_with_a_present_dominant_channel(fake_eog):
-    """blink on [Fp1, Fp2, F3, F9], F9 missing. Re-pinned for fix round 4: -0.0864 under the
-    grid version (Fp1 alone, the nearest anchor at 78 mm) and -0.1230 now, because F3 (86 mm)
-    and Fp2 also get their 1/d^2 share, and F3 needs a larger scale than Fp1 once the dipole's
-    distance falloff is divided out."""
+    """blink on [Fp1, Fp2, F3, F9], F9 missing: -0.0864 anchored on Fp1 alone (the nearest anchor
+    at 78 mm), but -0.1230 with the smooth fit, because F3 (86 mm) and Fp2 also get their 1/d^2
+    share, and F3 needs a larger scale than Fp1 once the dipole's distance falloff is divided
+    out."""
     head = load_head_model()
     pos = dict(zip(CHANNELS_19, head.electrode_pos, strict=True))
     f9 = np.array([-0.085, 0.030, -0.030])
@@ -339,8 +339,8 @@ def test_empirical_fallback_frontal_case_with_a_present_dominant_channel(fake_eo
 
 
 def test_empirical_fallback_with_no_channel_in_file_is_the_analytic_dipole(fake_eog):
-    """With no anchor to fit against, the fallback is the analytic dipole on its full-head unit
-    (P30), checked across two missing channels at different distances from the source."""
+    """With no anchor to fit against, the fallback is the analytic dipole on its full-head unit,
+    checked across two missing channels at different distances from the source."""
     f9 = np.array([-0.085, 0.030, -0.030])
     oz = np.array([0.0, -0.11, 0.0])
     pos = np.array([f9, oz])
@@ -357,9 +357,9 @@ def test_empirical_fallback_with_no_channel_in_file_is_the_analytic_dipole(fake_
 
 def test_empirical_fallback_never_uses_an_anchor_that_disagrees_in_sign(real_eog):
     """On the real blink map F7, T3 and T4 are positive where the dipole model is negative. With
-    only those three present no anchor is usable, so A1 is exactly the analytic dipole (fix round
-    5). The rule it replaces fitted through all three and gave A1 +0.349; on the full montage of
-    the mirror tests A1 is negative (-0.107), and so is the dipole (-0.091)."""
+    only those three present no anchor is usable, so A1 is exactly the analytic dipole. Fitting
+    through all three regardless of sign agreement would instead give A1 +0.349; on the full
+    montage of the mirror tests A1 is negative (-0.107), and so is the dipole (-0.091)."""
     head = load_head_model()
     pos = dict(zip(CHANNELS_19, head.electrode_pos, strict=True))
     a1 = _EXTRA_POS[0]
@@ -379,7 +379,7 @@ def test_empirical_fallback_never_uses_an_anchor_that_disagrees_in_sign(real_eog
 
 
 def test_empirical_real_file_blink_peaks_frontal_heog_opposite_f7_f8(real_eog):
-    """Exercises the real Task-15 data file: no monkeypatching, no fake fixture."""
+    """Exercises the real eog_patterns.npz data file: no monkeypatching, no fake fixture."""
     blink = patterns.empirical("blink", CHANNELS_19, z=0.0)
     assert np.argmax(np.abs(blink)) in (CHANNELS_19.index("Fp1"), CHANNELS_19.index("Fp2"))
     heog = patterns.empirical("heog", CHANNELS_19, z=0.0)
@@ -402,8 +402,8 @@ def _mirror_checks(name, chs, v):
 
 
 def test_empirical_fallback_mirror_symmetry_on_a_full_montage(real_eog):
-    """A missing channel's fallback must not be lopsided at its mirror twin, in size or in sign
-    (re-review round 3 finding 2). Real data file. Positions from `_EXTRA_POS`."""
+    """A missing channel's fallback must not be lopsided at its mirror twin, in size or in sign.
+    Real data file. Positions from `_EXTRA_POS`."""
     head = load_head_model()
     chs = list(CHANNELS_19) + list(_EXTRA_CHANNELS)
     pos = np.vstack([head.electrode_pos, _EXTRA_POS])
@@ -427,9 +427,9 @@ def test_empirical_fallback_mirror_symmetry_on_a_full_montage(real_eog):
 
 
 def test_empirical_fallback_af9_af10_heog_is_balanced(real_eog):
-    """The grid version put AF10 at 32x AF9 (a strong anchor won a distance tie on one side).
-    The smooth fit gives AF9 -1.119 and AF10 +1.296 (ratio 1.158); both lie beyond the file's
-    peak, so since fix round 5 both are clipped to it and the ratio is 1."""
+    """Anchoring on distance alone would put AF10 at 32x AF9 (a strong anchor winning a distance
+    tie on one side). The smooth fit gives AF9 -1.119 and AF10 +1.296 (ratio 1.158); both lie
+    beyond the file's peak, so both are clipped to it and the ratio is 1."""
     head = load_head_model()
     chs = [*CHANNELS_19, "AF9", "AF10"]
     pos = np.vstack([head.electrode_pos, _AF_POS["AF9"], _AF_POS["AF10"]])
@@ -538,8 +538,8 @@ def test_fallback_scale_breaks_exact_distance_ties_by_label_not_request_order():
 
 
 def test_fallback_reliability_rises_smoothly_from_the_floor_to_three_times_the_floor():
-    """r(|cos|) is 0 up to the floor (0.05), 1 from 3x the floor (the ruling said 2x; 3x is
-    what the real-montage sweeps support, see `_FALLBACK_FULL`), a smoothstep between, and the
+    """r(|cos|) is 0 up to the floor (0.05), 1 from 3x the floor (what the real-montage sweeps
+    support, see `_FALLBACK_FULL`), a smoothstep between, and the
     same for either sign; no step on a fine grid is large (a hard cutoff would jump 0 -> 1)."""
     f = patterns._FALLBACK_FLOOR
     assert f == 0.05
@@ -651,7 +651,7 @@ def test_empirical_fallback_is_continuous_as_a_lone_anchor_crosses_the_floor(rea
     assert vals[-1] == pytest.approx(-0.4670, abs=0.0005)
 
 
-# --- fix round 5: sparse montages, the jitter cap, the referenced jitter sign -----------------
+# --- sparse montages, the jitter cap, the referenced jitter sign ------------------------------
 
 
 def _mirror_montage(name):
@@ -674,13 +674,14 @@ def _mirror_montage(name):
     ],
 )
 def test_sparse_montage_fallbacks_keep_the_full_montage_sign_and_size(real_eog, name, chs, before):
-    """The re-review's small montages (values before fix round 5 in `before`). In each, every
-    present channel either disagrees in sign with the dipole (blink F7, T3, T4; heog O1) or sits
-    at its null (blink F8, cos +0.041; heog Pz, cos +0.004), so no anchor is usable and each
-    missing channel is exactly the analytic dipole. Against the mirror-test montage (see
-    `_mirror_montage`) each keeps its sign and is at most 3x its size there. The heog F9
-    dipole value (-0.238) is 0.30 of the montage value (-0.792): the dipole puts the heog peak at
-    Fp1/Fp2, where the real map peaks at F7/F8, so the lower bound here is 1/4, not 1/3."""
+    """Small montages where every present channel either disagrees in sign with the dipole
+    (blink F7, T3, T4; heog O1) or sits at its null (blink F8, cos +0.041; heog Pz, cos +0.004),
+    so no anchor is usable and each missing channel is exactly the analytic dipole (`before`
+    holds each case's value under simple nearest-anchor scaling instead, for contrast). Against
+    the mirror-test montage (see `_mirror_montage`) each keeps its sign and is at most 3x its
+    size there. The heog F9 dipole value (-0.238) is 0.30 of the montage value (-0.792): the
+    dipole puts the heog peak at Fp1/Fp2, where the real map peaks at F7/F8, so the lower bound
+    here is 1/4, not 1/3."""
     ref, where = _mirror_montage(name)
     pos = np.array([where[c] for c in chs])
     v = patterns.empirical(name, list(chs), electrode_pos=pos, z=0.0)
@@ -696,9 +697,10 @@ def test_sparse_montage_fallbacks_keep_the_full_montage_sign_and_size(real_eog, 
 
 
 def test_mirror_montage_reference_values(real_eog):
-    """The montage the sparse tests compare against, pinned (z = 0). Fix round 5 moved blink A2
-    (-0.106 -> -0.090) and F10 (-0.256 -> -0.213): F8, at the dipole's null (cos +0.041), no
-    longer anchors them; F7, their mirror anchor, disagrees in sign and never did."""
+    """The montage the sparse tests compare against, pinned (z = 0). Excluding near-null anchors
+    (the reliability floor) is what pins blink A2 at -0.090 and F10 at -0.213, not -0.106/-0.256:
+    F8, at the dipole's null (cos +0.041), does not anchor them; F7, their mirror anchor,
+    disagrees in sign and never did."""
     blink, _ = _mirror_montage("blink")
     heog, _ = _mirror_montage("heog")
     want_blink = {"A1": -0.107, "A2": -0.090, "F9": -0.239, "F10": -0.213}
@@ -708,13 +710,11 @@ def test_mirror_montage_reference_values(real_eog):
 
 
 # Random sparse requests: 2-6 channels of CHANNELS_19 plus 1-2 of `_EXTRA_CHANNELS`, z = 0,
-# against `_mirror_montage` (the reviewer's sweep, another seed). Before fix round 5 the
-# reviewer's seed gave (blink / heog) 71 / 27 fallbacks more than 3x too large and 18 / 16 sign
-# flips; on this seed 57f3560 gives 70 / 34 and 12 / 16. Measured now, over 4455 fallbacks per
-# map: no flips and 0 / 6 more than 3x too large. All 6 are heog TP9 or P9 (3.1x) with O2 as the
-# only usable anchor: the referenced heog map is lopsided there (O2 +0.090, O1 +0.012); O2 is far
-# from the model's null (cos +0.153). The clip to the map peak fires 0 / 405 times, all at heog
-# F9 (178) and F10 (227), which lie nearer the eyes than F7/F8 (see `empirical`).
+# against `_mirror_montage` (a fixed sweep seed). Measured over 4455 fallbacks per map: no sign
+# flips and 0 / 6 more than 3x too large. All 6 are heog TP9 or P9 (3.1x) with O2 as the only
+# usable anchor: the referenced heog map is lopsided there (O2 +0.090, O1 +0.012); O2 is far from
+# the model's null (cos +0.153). The clip to the map peak fires 0 / 405 times, all at heog F9
+# (178) and F10 (227), which lie nearer the eyes than F7/F8 (see `empirical`).
 _SWEEP_REQUESTS = 3000
 _SWEEP_MAX_OVER_3X = {"blink": 0, "heog": 6}
 

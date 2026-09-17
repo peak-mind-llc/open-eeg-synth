@@ -111,8 +111,8 @@ def render_layers(truth: dict, condition: str, *, rtol: float = 1e-3) -> Recordi
             f"{list(truth['recordings'])}"
         )
     subject = make_subject(spec)
-    # Same per-condition path as make_case (R1): render + timeline + plant-silencing all live in
-    # one place, so a truth file's re-rendered plants can never drift from what make_case wrote.
+    # Same per-condition path as make_case: render + timeline + plant-silencing all live in one
+    # place, so a truth file's re-rendered plants can never drift from what make_case wrote.
     rec = make_recording(spec, subject, cond)
 
     expected = truth["recordings"][condition]

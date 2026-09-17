@@ -10,7 +10,7 @@ from open_eeg_synth.brain.state import StateSegment, StateTimeline
 from open_eeg_synth.case import ArtifactSpec, CaseSpec, ConditionSpec
 from open_eeg_synth.channels import CHANNELS_19
 
-# Calibration (Task 12, DESIGN §4.3 "M2 re-derives amp_uv", §9.1 targets). The feasibility test's
+# Calibration (DESIGN §4.3 "M2 re-derives amp_uv", §9.1 targets). The feasibility test's
 # amplitudes were set in its empirical convention; under the analytic convention (§4.3, §11.6) the
 # resting model was re-tuned on MEDIANS over 96 subjects (case seeds 100-195, `resting_case(seed,
 # duration_s=60, artifacts=())`, brain + sensor noise, perturbed head), measured as DESIGN §9.1
@@ -42,7 +42,8 @@ _ALPHA_WIDTH_MM = 25.0  # was 10
 
 
 def resting_brain() -> BrainSpec:
-    """The resting model: the feasibility test's structure, amplitudes calibrated in Task 12."""
+    """The resting model: the feasibility test's structure, amplitudes calibrated per DESIGN
+    §4.3."""
     return BrainSpec(
         background=BackgroundSpec(
             smoothing_mm=20.0, exponent=1.2, rms_uv=_BACKGROUND_RMS_UV, network_frac=0.5

@@ -95,8 +95,8 @@ def test_brain_layer_chunk_invariance_and_eyes_closed_alpha():
 
 
 # Calibrated medians of this test's own measurement (brain layer only, nominal head, eyes closed,
-# average reference, 60 s, the 9 seeds below) for the recipe calibrated in Task 12
-# (recipes.py): O1 alpha share 0.567 (range 0.22-0.76), Cz 1-45 Hz RMS 11.9 uV (11.1-13.9).
+# average reference, 60 s, the 9 seeds below) for the recipe calibrated in recipes.py (DESIGN
+# §4.3): O1 alpha share 0.567 (range 0.22-0.76), Cz 1-45 Hz RMS 11.9 uV (11.1-13.9).
 #
 # These pins belong to this fixed seed set, which reads low: the population medians of the same
 # measurement over 270 seeds (0-269) are O1 share 0.63 and Cz 12.8 uV. Four of the nine subjects
@@ -140,9 +140,8 @@ def test_eyes_open_collapses_alpha():
 
 def test_brain_layer_part_matches_standalone_rhythm_stream():
     """A BrainLayer's alpha part must be seeded exactly like a standalone Rhythm built
-    from the DESIGN §8.1 stream ``<condition>:rhythm:alpha`` (fix round 1, item 3d, P17;
-    mutation M5 points the rhythm stream at the background stream instead), with its
-    per-patch offsets and lags drawn from ``subject:rhythm:alpha``."""
+    from the DESIGN §8.1 stream ``<condition>:rhythm:alpha``, not the background stream, with
+    its per-patch offsets and lags drawn from ``subject:rhythm:alpha``."""
     head = load_head_model()
     spec = resting_brain()
     tl = StateTimeline.constant("eyes_closed")
@@ -177,8 +176,8 @@ def test_brain_layer_part_matches_standalone_rhythm_stream():
 
 
 def test_rows_selects_full_output_columns():
-    """rows= must equal the full 19-channel render indexed by those rows (fix round 1,
-    item 3e, P3; mutation M6 ignores rows)."""
+    """rows= must equal the full 19-channel render indexed by those rows, not ignore rows and
+    return the full render unselected."""
     make = _build(resting_brain(), StateTimeline.constant("eyes_closed"))
     n = int(10 * FS)
     full = make().render(0, n)
@@ -216,8 +215,8 @@ def test_brain_spec_normalises_rhythms_list_to_tuple():
 
 
 def test_network_layer_contributes_to_brain_output():
-    """Dropping the network part must change the rendered output (fix round 1, item 3f;
-    mutation M4 drops Network from ``parts`` entirely)."""
+    """Dropping the network part must change the rendered output: it must actually be in
+    ``parts`` and contribute, not be silently dropped."""
     make = _build(resting_brain(), StateTimeline.constant("eyes_closed"))
     layer = make()
     names = [p.name for p in layer.parts]

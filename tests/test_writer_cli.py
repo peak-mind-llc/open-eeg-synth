@@ -25,7 +25,7 @@ def test_write_case_layout(tmp_path):
     with_layers = write_case(tmp_path / "L", case, embed_layers=True)
     z = np.load(with_layers.layers)
     assert "eyes_open/brain" in z.files and z["eyes_open/brain"].shape == (19, 3 * 256)
-    # R3: the .layers.npz says "synthetic" like every other file the package writes.
+    # The .layers.npz says "synthetic" like every other file the package writes.
     assert str(z["label"]) == "synthetic"
 
 

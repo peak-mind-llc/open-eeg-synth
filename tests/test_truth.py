@@ -49,7 +49,7 @@ def test_render_layers_reproduces_and_detects_mismatch():
 
 
 def test_render_layers_plants_match_make_case_when_a_timeline_silences_one():
-    """R1: render_layers must rebuild a condition through the same code path as make_case, so a
+    """render_layers must rebuild a condition through the same code path as make_case, so a
     plant that a condition's timeline silences everywhere (here, FocalSlow zeroed in both states
     of the drowsy eyes_closed condition) is dropped from render_layers' plant list exactly as it
     is from make_case's, and kept where the timeline does not silence it."""
@@ -73,7 +73,7 @@ def test_render_layers_plants_match_make_case_when_a_timeline_silences_one():
 
 
 def test_render_layers_raises_on_layer_set_mismatch():
-    """R2: a layer name that the truth file's ``layers`` list no longer carries (here, dropping
+    """A layer name that the truth file's ``layers`` list no longer carries (here, dropping
     "sensor") is a mismatch against the re-rendered layer set, not just a value mismatch."""
     case = make_case(resting_case(55, duration_s=2.0))
     d = case_truth(case, {"eyes_closed": "a.edf", "eyes_open": "b.edf"})
@@ -83,7 +83,7 @@ def test_render_layers_raises_on_layer_set_mismatch():
 
 
 def test_case_truth_raises_value_error_for_missing_condition_files():
-    """R4: a missing ``files`` entry names the missing condition(s), not a bare KeyError."""
+    """A missing ``files`` entry names the missing condition(s), not a bare KeyError."""
     case = make_case(resting_case(56, duration_s=1.0))
     with pytest.raises(ValueError, match="eyes_open"):
         case_truth(case, {"eyes_closed": "a.edf"})

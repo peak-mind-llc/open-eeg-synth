@@ -164,7 +164,7 @@ def _random_partition(rng, total, one_sample_prob=0.3, max_chunk=400):
 def test_two_exclusive_artifacts_are_chunk_and_call_order_invariant():
     """Two exclusive plug-ins sharing an Occupancy: whole vs >=20 random partitions (incl.
     1-sample chunks) give bit-identical samples and truth, and their spans never overlap
-    (ruling P9/§8.2: the shared scheduler, not a per-artifact one, must be chunk-invariant)."""
+    (DESIGN §8.2: the shared scheduler, not a per-artifact one, must be chunk-invariant)."""
     tl = StateTimeline.constant("eyes_open")
 
     def run_pair(chunks, seed_a=1, seed_b=2, rate=0.4, length_s=1.0):
@@ -448,7 +448,7 @@ def test_event_rejects_a_non_2d_block():
 def test_exclusive_push_rebuilds_the_event_at_its_final_onset():
     """A pushed event must be rebuilt via make_event at its final onset, not just have its truth
     patched: anything the plug-in derives from `onset` (state, params, ...) must reflect where
-    the event actually landed, not the pre-push candidate (re-review round 2 finding 5a)."""
+    the event actually landed, not the pre-push candidate."""
 
     class StateAware(EventArtifact):
         kind = "test_state_aware"
@@ -490,7 +490,7 @@ def test_exclusive_push_rebuilds_the_event_at_its_final_onset():
 
 def test_min_gap_after_an_exclusive_push_is_measured_from_the_pushed_event_end():
     """The refractory gap after a pushed event must be measured from where it actually ends,
-    not from the pre-push candidate's would-be end (re-review round 2 finding 5c, mutation X16:
+    not from the pre-push candidate's would-be end (a wrong implementation might compute
     `_earliest = onset + block.shape[1] + gap` using the stale pre-push `onset`)."""
     tl = StateTimeline.constant("eyes_open")
     occ = Occupancy()
@@ -574,7 +574,7 @@ def test_truth_before_bind_returns_empty_list():
 def test_make_event_must_return_an_event_at_the_given_onset():
     """A plug-in whose Event starts somewhere other than the onset it was given must raise,
     naming the plug-in's kind - not spin the exclusive rebuild loop forever colliding with
-    itself at the same sample every time (re-review round 3 finding 1)."""
+    itself at the same sample every time."""
 
     class PreRoll(EventArtifact):
         kind = "test_preroll"
@@ -810,7 +810,7 @@ def test_pruning_stays_bounded_with_a_rare_exclusive_peer():
     truth_control = [t.to_dict() for a in arts_control for t in a.truth()]
     assert len(arts_pruned[1].truth()) > 0  # the rare peer really did fire, and fired early
     assert arts_pruned[1].truth()[0].onset_s < 30.0
-    assert max_spans < 20  # bounded despite the rare peer - not the ~1150 it was before the fix
+    assert max_spans < 20  # bounded despite the rare peer (see docstring)
     assert truth == truth_control
 
 
@@ -933,8 +933,8 @@ def test_same_occupancy_rebind_after_pruning_a_peers_span_is_refused():
     drops only its own spans (`bind`'s docstring) - it relies on every *other* participant's
     already-committed spans still being in `occ.spans` to avoid re-colliding with their history.
     Once pruning has discarded a peer's span, that history is gone, and a naive rebind can
-    schedule straight through it (reproduced against the unfixed code: 115 of 122 replayed events
-    overlapped the peer). The occupancy must instead refuse the rebind."""
+    schedule straight through it, overlapping the peer. The occupancy must instead refuse the
+    rebind."""
     tl = StateTimeline.constant("eyes_open")
     occ = Occupancy()
     a = Pulse(rate_by_state={"eyes_open": 2.0}, exclusive=True, length_s=0.3)

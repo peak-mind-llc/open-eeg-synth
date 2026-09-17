@@ -384,9 +384,8 @@ def test_whole_case_is_chunk_invariant(_test_kinds):
 def test_plant_rhythms_are_subject_properties_too():
     """A plant's own rhythm draws its per-patch offsets/lags once per subject too (DESIGN §8.1
     subject:rhythm:<name>), identical in every condition — and adding a plant must not disturb
-    any base rhythm's own subject draws (Task 21 fix round 1; corrects the Task 21 report's
-    coverage claim, which checked only that the plant rhythm's name showed up, not that its
-    subject draws behaved like a base rhythm's)."""
+    any base rhythm's own subject draws. Checks that the plant rhythm's own subject draws behave
+    like a base rhythm's, not just that its name shows up."""
     plants = (RhythmicBursts(("Fz", "F3", "F4")), FocalSlow("T3"))
     base = resting_case(9, duration_s=1.0, artifacts=())
     planted = resting_case(9, duration_s=1.0, artifacts=(), plants=plants)

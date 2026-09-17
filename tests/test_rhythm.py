@@ -153,8 +153,8 @@ def test_rhythm_spec_needs_exactly_one_of_sites_or_region():
 
 def test_mirror_pairs_consistent_polarity_and_magnitude():
     """Every mirror pair's map has the same sign at its own electrode(s) and a similar
-    magnitude there, for both placements (fix round 1, item 1: a mirror patch used to be
-    oriented independently of its partner and could end up anti-correlated with it)."""
+    magnitude there, for both placements: a mirror patch oriented independently of its partner
+    could end up anti-correlated with it."""
     head = load_head_model()
     mismatches = []
     ratios = []
@@ -210,8 +210,8 @@ def test_mirror_pairs_consistent_polarity_and_magnitude():
 
 
 def test_hemisphere_gain_applied_after_scale():
-    """hemisphere_gain must not change ``scale`` (fix round 1, item 2: scale used to be
-    computed from the already-gained maps, so the gain partly undid itself)."""
+    """hemisphere_gain must not change ``scale``: computing scale from the already-gained maps
+    would let the gain partly undo itself."""
     head = load_head_model()
     tl = StateTimeline.constant("eyes_closed")
     spec = resting_brain().rhythms[1]  # theta: clean site placement, no region overlap
@@ -236,8 +236,7 @@ def test_hemisphere_gain_applied_after_scale():
 
 
 def test_indep_controls_inter_patch_correlation():
-    """indep must change how correlated a rhythm's own patches are (fix round 1, item 3g;
-    mutation M3 hardcodes the shared/own mix, making indep a no-op)."""
+    """indep must change how correlated a rhythm's own patches are."""
     head = load_head_model()
     tl = StateTimeline.constant("eyes_closed")
 
@@ -257,7 +256,7 @@ def test_indep_controls_inter_patch_correlation():
 
 def test_lag_produces_cross_spectrum_phase_between_mirror_sites():
     """A non-zero per-patch lag must show up as a non-zero cross-spectrum phase between
-    the sites it drives (fix round 1, item 3a; mutation M1 zeroes every lag)."""
+    the sites it drives."""
     head = load_head_model()
     tl = StateTimeline.constant("eyes_closed")
     spec = RhythmSpec("smr", 13.5, 6.0, sites=("C3", "C4", "Cz"), lag_ms=20.0)
@@ -286,7 +285,7 @@ def test_lag_produces_cross_spectrum_phase_between_mirror_sites():
 
 def test_drowsy_state_shift_moves_alpha_peak():
     """state_f0_shift_hz must move the rendered spectral peak, not just the internal
-    frequency target (fix round 1, item 3c; mutation M2 zeroes the shift)."""
+    frequency target."""
     head = load_head_model()
     spec = resting_brain().rhythms[0]  # alpha: state_f0_shift_hz={"drowsy": -1.0}
     assert spec.name == "alpha" and spec.state_f0_shift_hz == {"drowsy": -1.0}
@@ -321,8 +320,7 @@ def test_orient_patches_flips_to_positive_and_mirrors_partner():
     mirror partner is then forced to agree there too. Real cortical geometry is almost
     always already positive at a patch's own reference channel (DESIGN §4.3's flip is a
     rare correction), so a test built only from real seeds could pass by luck even with
-    the flip removed entirely (mutation M13); this constructs the negative case
-    directly."""
+    the flip removed entirely; this constructs the negative case directly."""
     head = load_head_model()
     c3, c4 = head.index("C3"), head.index("C4")
     centres = placed_centres(head, ("C3", "C4"), stream_rng(1, "subject:rhythm:smr"))
@@ -337,8 +335,8 @@ def test_orient_patches_flips_to_positive_and_mirrors_partner():
 
 
 def test_own_oscillators_get_distinct_per_patch_frequency_jitter():
-    """Each patch's own oscillator is centred at f0 + a per-patch draw (fix round 1,
-    item 3; mutation M7 zeroes that draw, locking every patch to exactly f0)."""
+    """Each patch's own oscillator is centred at f0 + a per-patch draw, not locked to exactly
+    f0."""
     head = load_head_model()
     spec = RhythmSpec("smr", 13.5, 6.0, sites=("C3", "C4", "Cz"))
     centres = placed_centres(head, spec.sites, stream_rng(1, "subject:rhythm:smr"))
@@ -358,8 +356,7 @@ def test_own_oscillators_get_distinct_per_patch_frequency_jitter():
 
 def test_driver_history_is_not_zeroed_at_construction():
     """The driver's pre-render history is drawn from its stationary distribution, not
-    zeroed, so there is no warm-up transient (fix round 1, item 3; mutation M12 zeroes
-    it)."""
+    zeroed, so there is no warm-up transient."""
     head = load_head_model()
     spec = RhythmSpec("smr", 13.5, 6.0, sites=("C3", "C4", "Cz"), lag_ms=100.0)
     centres = placed_centres(head, spec.sites, stream_rng(1, "subject:rhythm:smr"))
@@ -378,7 +375,7 @@ def test_driver_history_is_not_zeroed_at_construction():
 
 def test_midline_site_is_always_the_nearest_source_deterministically():
     """A midline site takes the single source nearest the midline, not a random pick
-    (fix round 1, item 5a, DESIGN §4.3; mutation-equivalent to disabling that branch)."""
+    (DESIGN §4.3)."""
     head = load_head_model()
     cand = head.sources_under("Cz", 25)
     expected = int(cand[np.argsort(np.abs(head.source_pos[cand, 0]))[0]])
@@ -388,8 +385,7 @@ def test_midline_site_is_always_the_nearest_source_deterministically():
 
 
 def test_envelope_is_clipped_to_configured_range():
-    """The log-envelope OU process is clipped to [env_lo, env_hi] before exponentiating
-    (fix round 1, item 3; mutation M17 removes the clip)."""
+    """The log-envelope OU process is clipped to [env_lo, env_hi] before exponentiating."""
     spec = RhythmSpec(
         "x", 10.0, 1.0, sites=("Fz",), env_lo=0.25, env_hi=1.8, env_sd=5.0, env_tau_s=0.05
     )
@@ -399,8 +395,8 @@ def test_envelope_is_clipped_to_configured_range():
 
 
 def test_frequency_wander_produces_measurable_instantaneous_spread():
-    """f_sd must make the instantaneous frequency wander around f0 (fix round 1, item 3;
-    mutation M18 zeroes the OU draw, locking the oscillator to a pure tone)."""
+    """f_sd must make the instantaneous frequency wander around f0, not lock the oscillator to
+    a pure tone."""
     from scipy.signal import hilbert
 
     spec = RhythmSpec(

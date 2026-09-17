@@ -11,12 +11,12 @@ from open_eeg_synth.dsp import lowpass_decimate, raised_cosine_envelope
 from open_eeg_synth.headmodel import load_head_model
 
 DEFAULT_RATES = {"eyes_open": 1 / 60, "eyes_closed": 1 / 60, "drowsy": 1 / 120}
-# Temporalis placement (fix round 1 ruling): centred 5 mm lateral, 5 mm anterior and 7.5 mm
-# inferior of T3 (left) / T4 (right) on the template head (head frame: +x right, +y anterior,
-# +z up), sigma 50 mm. Relative to T3 / T4, the raw Gaussian (P30) then reads T3 1.00, F7 0.72,
-# T5 0.40, C3 0.21 on the left and T4 1.00, F8 0.59, T6 0.38, C4 0.29 on the right; the
-# opposite temporal channel is 0.003. Template T3 = (-0.0824765, -0.0129234, -0.0053889) and
-# T4 = (0.0850215, -0.0180840, -0.0024852).
+# Temporalis placement: centred 5 mm lateral, 5 mm anterior and 7.5 mm inferior of T3 (left) /
+# T4 (right) on the template head (head frame: +x right, +y anterior, +z up), sigma 50 mm.
+# Relative to T3 / T4, the raw Gaussian then reads T3 1.00, F7 0.72, T5 0.40, C3 0.21 on the
+# left and T4 1.00, F8 0.59, T6 0.38, C4 0.29 on the right; the opposite temporal channel is
+# 0.003. Template T3 = (-0.0824765, -0.0129234, -0.0053889) and T4 = (0.0850215, -0.0180840,
+# -0.0024852).
 LEFT_CENTRE = np.array([-0.0874765, -0.0079234, -0.0128889])
 RIGHT_CENTRE = np.array([0.0900215, -0.0130840, -0.0099852])
 _CENTRES = {"left": LEFT_CENTRE, "right": RIGHT_CENTRE}
@@ -56,7 +56,7 @@ class JawEmg(EventArtifact):
         super().bind(ctx)
         # Each side's map is 1.0 at its loudest channel on the full template head (T3 / T4), so
         # the drawn plateau RMS is the RMS there, and a recording without T3 / T4 keeps its
-        # channels at their full-head size instead of being stretched to 1 (P30).
+        # channels at their full-head size instead of being stretched to 1.
         template = load_head_model().electrode_pos
         self.pattern, self._full_pattern = {}, {}
         for side, centre in _CENTRES.items():
@@ -107,7 +107,7 @@ class JawEmg(EventArtifact):
             channels,
             onset / fs,
             (onset + block.shape[1]) / fs,
-            float(np.abs(full).max()),  # the full-head peak, whatever is recorded (P30)
+            float(np.abs(full).max()),  # the full-head peak, whatever is recorded
             (Remedy.MASK_SEGMENT, Remedy.REMOVE_COMPONENT),
             self.layer_name,
             {"duration_s": round(dur, 3), "rms_uv": round(rms, 1)},

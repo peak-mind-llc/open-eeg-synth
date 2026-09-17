@@ -95,7 +95,7 @@ class CaseSpec:
     head_model: str = "colin27_19ch"
     perturb_head: bool = True
     brain: BrainSpec = field(default_factory=_default_brain)
-    plants: tuple = ()  # Plant instances (Task 21)
+    plants: tuple = ()  # Plant instances (brain/plants.py)
     artifacts: tuple[ArtifactSpec, ...] = field(default_factory=_default_artifacts)
     sensor: SensorSpec = SensorSpec()
     conditions: tuple[ConditionSpec, ...] = field(default_factory=_default_conditions)
@@ -173,7 +173,7 @@ def compiled_rhythms(spec: CaseSpec) -> tuple[RhythmSpec, ...]:
 
     Every per-rhythm keyed structure (subject draws, time streams, ``BrainLayer.parts``) keys on
     ``RhythmSpec.name``, so two compiled rhythms sharing a name would collide and silently render
-    as one rhythm at whichever compiled last (Task 21 fix round 1) — raise instead.
+    as one rhythm at whichever compiled last — raise instead.
     """
     from open_eeg_synth.brain.plants import apply_modifiers
 

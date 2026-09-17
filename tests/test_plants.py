@@ -100,7 +100,7 @@ def test_focal_slow_is_spatially_specific():
 
 
 def test_lateral_imbalance_and_reduced_rhythm():
-    """>= 6 seeds, average-referenced, median threshold (ruling P8): a single seed can be lucky —
+    """>= 6 seeds, average-referenced, median threshold: a single seed can be lucky —
     e.g. seed 108's raw-referenced lateral-imbalance ratio alone is 0.487, above a 0.6 bound.
 
     One subject per seed, shared across the clean/LateralImbalance/ReducedRhythm variants:

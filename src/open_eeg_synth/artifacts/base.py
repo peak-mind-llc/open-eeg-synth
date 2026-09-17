@@ -112,9 +112,9 @@ class Occupancy:
         get pushed clear of them, exactly as a fresh instance sharing this occupancy would be.
         Once `_prune_stale_spans` has thrown away a peer's span, that safety net is gone: `art`
         replaying from 0 can schedule straight through history this occupancy no longer
-        remembers (confirmed with a reproducer: 115 of 122 replayed events overlapped the peer).
-        A rebind that only ever pruned its *own* spans is unaffected - dropping them was already
-        going to happen anyway - so a single-artifact occupancy keeps rebinding freely forever.
+        remembers, overlapping a span the peer already committed and rendered. A rebind that
+        only ever pruned its *own* spans is unaffected - dropping them was already going to
+        happen anyway - so a single-artifact occupancy keeps rebinding freely forever.
 
         Deliberately does nothing else and raises before appending, so `EventArtifact.bind` can
         call this first, before it changes any of its own or the (possible) old Occupancy's

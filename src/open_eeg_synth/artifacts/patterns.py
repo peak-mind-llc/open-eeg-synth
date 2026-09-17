@@ -1,18 +1,18 @@
 """Scalp patterns for non-cortical signals: empirical eye maps, analytic focal/dipole maps.
 
-DESIGN §5.5, with rulings P28-P30 and fix rounds 4-5:
+DESIGN §5.5:
 
 - The eye maps in the data file are average-referenced ICA topographies. They are re-referenced to
-  the mean of the file's T9 and T10 when loaded (P28): the synthetic recording is referential,
-  an average-reference view of the result is unchanged, and a linked-ears view no longer shows a
+  the mean of the file's T9 and T10 when loaded: the synthetic recording is referential, an
+  average-reference view of the result is unchanged, and a linked-ears view no longer shows a
   false posterior blink.
-- Every amplitude is referenced to the full head, never to the requested channels (P30): an
+- Every amplitude is referenced to the full head, never to the requested channels: an
   empirical map is divided by the largest |value| of the whole (referenced, jittered) file map,
   a focal map is the raw Gaussian, and a dipole map is divided by its largest |value| over the
   19-channel template head. A four-channel request returns the same numbers those four channels
   have in the full answer.
 - A channel absent from the file takes the analytic dipole there, scaled to its nearest usable
-  requested channels (fix rounds 4-5, `empirical`), and never exceeds the file map's peak.
+  requested channels (see `empirical`), and never exceeds the file map's peak.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from open_eeg_synth.headmodel import load_head_model
 
 _EOG_PATH = resources.files("open_eeg_synth.artifacts") / "data" / "eog_patterns.npz"
 EYE_CENTRE = np.array([0.0, 0.085, -0.020])  # between the eyes, head frame, metres
-REFERENCE_CHANNELS = ("T9", "T10")  # the eye maps are referenced to their mean at load (P28)
+REFERENCE_CHANNELS = ("T9", "T10")  # the eye maps are referenced to their mean at load
 
 # The per-subject jitter `empirical` draws (its `jitter_sd` default) and clips to, the one
 # definition `case.make_subject` also draws from when it records a jitter for a plug-in's
@@ -36,13 +36,13 @@ REFERENCE_CHANNELS = ("T9", "T10")  # the eye maps are referenced to their mean 
 JITTER_SD = 0.6
 JITTER_CLIP = 1.0
 
-# A channel's jitter step is its sd, capped at this fraction of its own |mean|. P29 asks that no
-# z in [-1, 1] flip a channel's sign; on the shipped file the sd exceeds |mean| on 30 of the 64
-# blink channels and 58 of the 64 heog channels, so the uncapped `mean + z * sign(mean) * sd`
-# would flip (for example) heog T3 but not T4 at z = -1. Below the cap the formula is exact.
+# A channel's jitter step is its sd, capped at this fraction of its own |mean|, so that no z in
+# [-1, 1] flips a channel's sign: on the shipped file the sd exceeds |mean| on 30 of the 64 blink
+# channels and 58 of the 64 heog channels, so the uncapped `mean + z * sign(mean) * sd` would
+# flip (for example) heog T3 but not T4 at z = -1. Below the cap the formula is exact.
 _JITTER_CAP = 0.9
 
-# Fallback fit (fix rounds 4-5): the k nearest usable present channels, weighted r / d^2.
+# Fallback fit: the k nearest usable present channels, weighted r / d^2.
 _FALLBACK_K = 5
 # An anchor's reliability r depends on the dipole's direction cosine there: 0 at or below
 # _FALLBACK_FLOOR, 1 from _FALLBACK_FULL, a smoothstep between. Near the model's null an anchor
@@ -76,7 +76,7 @@ def load_eog_patterns() -> dict:
 
 
 def _eye_map(name: str) -> tuple[list[str], np.ndarray, np.ndarray]:
-    """The file's channel names, its T9/T10-referenced mean map for `name`, and its sd (P28)."""
+    """The file's channel names, its T9/T10-referenced mean map for `name`, and its sd."""
     f = load_eog_patterns()
     names = [str(c) for c in f["channel_names"]]
     try:
@@ -90,7 +90,7 @@ def _eye_map(name: str) -> tuple[list[str], np.ndarray, np.ndarray]:
 
 
 def _full_map(name: str, z: float) -> tuple[list[str], np.ndarray]:
-    """The whole referenced, jittered file map for `name`, divided by its largest |value| (P29-P30).
+    """The whole referenced, jittered file map for `name`, divided by its largest |value|.
 
     ``jittered = mean + z * sign(mean) * step`` with ``step = min(sd, 0.9 |mean|)``: every channel
     moves away from zero as z grows and toward it as z falls, so mirror channels of opposite sign
@@ -106,7 +106,7 @@ def _full_map(name: str, z: float) -> tuple[list[str], np.ndarray]:
 def analytic_focal(
     centre_m: np.ndarray, electrode_pos_m: np.ndarray, sigma_mm: float
 ) -> np.ndarray:
-    """``exp(-d^2 / 2 sigma^2)`` for each electrode, d its distance from the centre (P30).
+    """``exp(-d^2 / 2 sigma^2)`` for each electrode, d its distance from the centre.
 
     Not normalised: the value is 1 only at the centre point itself, and is the same for an
     electrode whichever other electrodes are requested with it. A caller that wants its loudest
@@ -128,7 +128,7 @@ def _dipole_terms(pos_m, moment, electrode_pos_m: np.ndarray) -> tuple[np.ndarra
 
 def analytic_dipole(pos_m, moment, electrode_pos_m: np.ndarray) -> np.ndarray:
     """``(r . m) / |r|^3``, divided by its largest |value| over the 19-channel template head
-    (``load_head_model()``), not over the requested electrodes (P30): template electrodes lie in
+    (``load_head_model()``), not over the requested electrodes: template electrodes lie in
     [-1, 1], and a request returns the same number for an electrode whatever else it asks for."""
     env, cos = _dipole_terms(pos_m, moment, electrode_pos_m)
     t_env, t_cos = _dipole_terms(pos_m, moment, load_head_model().electrode_pos)
@@ -194,10 +194,10 @@ def empirical(
 ) -> np.ndarray:
     """Subject-jittered ICA map for ``name`` on ``channels``; unknowns fall back to a dipole.
 
-    The map is the file's T9/T10-referenced mean (P28) jittered by one subject scalar
+    The map is the file's T9/T10-referenced mean jittered by one subject scalar
     ``z ~ N(0, jitter_sd)`` clipped to [-1, 1] (drawn from ``rng`` unless ``z`` is given; see
-    `_full_map` for the sign-keeping formula, P29), divided by the largest |value| of the whole
-    64-channel map (P30). A requested channel in the file gets exactly its full-map value.
+    `_full_map` for the sign-keeping formula), divided by the largest |value| of the whole
+    64-channel map. A requested channel in the file gets exactly its full-map value.
 
     A channel absent from the file (``electrode_pos`` required) takes the analytic dipole's value
     there, scaled to the file by `_fallback_scale` over its nearest requested in-file channels.

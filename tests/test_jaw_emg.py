@@ -94,7 +94,7 @@ def test_pattern_is_the_anatomical_temporalis_placement():
 
 
 def test_pattern_keeps_its_full_head_scale_on_a_subset():
-    """P30: without T3 in the recording, C3 stays at its full-head 0.21, not stretched to 1."""
+    """Without T3 in the recording, C3 stays at its full-head 0.21, not stretched to 1."""
     rows = [CHANNELS_19.index(c) for c in ("C3", "C4", "P3", "P4")]
     for side in ("left", "right", "both"):
         kw = {"side": side, "rate_by_state": {"eyes_open": 0.3}, "min_gap_s": 0.5}
@@ -164,7 +164,7 @@ def test_explicit_empty_rates_mean_never():
 
 
 def test_left_clench_rms_at_c3_is_the_same_on_a_subset_case():
-    """P30 through make_case: C3's jaw layer on a C3/C4/P3/P4 case equals the 19-channel one."""
+    """Through make_case: C3's jaw layer on a C3/C4/P3/P4 case equals the 19-channel one."""
     arts = (ArtifactSpec("emg", {"side": "left", "rate_by_state": {"eyes_open": 0.1}}),)
     rms = {}
     for label, chs in (("sub", ("C3", "C4", "P3", "P4")), ("full", CHANNELS_19)):

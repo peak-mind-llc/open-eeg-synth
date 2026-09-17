@@ -7,7 +7,7 @@ mixing-matrix smoothing on the full head model) — fine for a mock device that 
 building one per test. Chunk size does not change the signal (DESIGN §8.2): unlike ``classic``,
 which drew blinks per chunk, samples here depend only on how many have been rendered so far.
 
-Note for the recorder (Task 29 R7): the raw stream's alpha is far less posterior-dominant than the
+Note for the recording application: the raw stream's alpha is far less posterior-dominant than the
 classic synthesizer's, because the lead field's native reference carries a common component that
 every channel shares (DESIGN §2.3); a live view that re-references (average or linked ears) shows
 the gradient, a raw referential view shows alpha on every channel, as a real referential amplifier
@@ -48,11 +48,11 @@ class StreamSource:
     """A chunked, phase-continuous stand-in for a real amplifier (DESIGN §7.3).
 
     Wraps a full-head :class:`~open_eeg_synth.case.CaseSpec`/:class:`~open_eeg_synth.engine.Engine`
-    (brain, sensor noise, ordinary artifacts by default) plus a :class:`~open_eeg_synth.heart.
-    HeartSource` for any heart-rate label, behind the same constructor and call shape as
-    ``classic.RealisticEEGSynthesizer``. Call :meth:`next_chunk` (and, in lockstep,
-    :meth:`due_markers`) repeatedly as new samples are needed; ``.truth`` and ``.seed`` are read
-    at any time.
+    (brain, sensor noise, ordinary artifacts by default) plus a
+    :class:`~open_eeg_synth.heart.HeartSource` for any heart-rate label, behind the same
+    constructor and call shape as ``classic.RealisticEEGSynthesizer``. Call :meth:`next_chunk`
+    (and, in lockstep, :meth:`due_markers`) repeatedly as new samples are needed; ``.truth`` and
+    ``.seed`` are read at any time.
 
     ``channel_labels`` must not repeat an EEG electrode (CaseSpec rejects duplicate channels
     after alias canonicalisation); heart-rate labels are the exception and may repeat freely.

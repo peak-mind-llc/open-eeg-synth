@@ -43,9 +43,9 @@ def test_waveform_shape():
 
 def test_blinks_only_with_eyes_open_frontal_map_over_many_subjects():
     """Per subject: blinks only with eyes open; Fp1 and Fp2 always in the truth channels, O1/O2
-    never, |O1|, |O2| < 0.15 on the referenced map (P6/P28); the drawn peak is the peak at the
-    full-head loudest channel (P30). Counts and the double-blink share are pooled over subjects
-    (a single 60 s subject has a 9 % chance of no double blink at all)."""
+    never, |O1|, |O2| < 0.15 on the referenced map; the drawn peak is the peak at the full-head
+    loudest channel. Counts and the double-blink share are pooled over subjects (a single 60 s
+    subject has a 9 % chance of no double blink at all)."""
     tl = StateTimeline(
         [StateSegment(0, 60, "eyes_open"), StateSegment(60, 120, "eyes_closed")], 0.0
     )
@@ -87,7 +87,7 @@ def test_explicit_empty_rates_mean_never():
 
 
 def test_blink_at_o1_is_the_same_on_a_subset_case():
-    """P30 through make_case: a blink's peak at O1 on an O1/O2/T3/T4 case equals its O1 value on
+    """Through make_case: a blink's peak at O1 on an O1/O2/T3/T4 case equals its O1 value on
     the 19-channel case of the same subject (the map is not re-normalised over the subset)."""
     arts = (ArtifactSpec("blink", {}),)
     peak = {}

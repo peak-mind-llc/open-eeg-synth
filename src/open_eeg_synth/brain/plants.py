@@ -167,7 +167,7 @@ class FocalSlow:
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         # the frequency rides in the compiled name so two FocalSlow plants at the same site
-        # (different f0_hz) compile to distinct rhythms instead of colliding (Task 21 fix round 1)
+        # (different f0_hz) compile to distinct rhythms instead of colliding
         name = f"plant:focal_slow:{self.site}:{self.f0_hz:g}hz"
         return (
             RhythmSpec(
