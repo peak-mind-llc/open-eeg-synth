@@ -35,6 +35,7 @@ from open_eeg_synth.case import (
     compiled_rhythms,
     make_case,
     make_engine,
+    make_recording,
     make_subject,
     plant_records,
 )
@@ -313,6 +314,26 @@ def test_make_case_raises_a_clear_error_for_a_non_finite_condition_duration():
     )
     with pytest.raises(ValueError, match="stream"):
         make_case(spec)
+
+
+def test_a_case_condition_must_last_a_whole_number_of_seconds(monkeypatch):
+    """EDF records are whole seconds, so a case condition must last a positive whole number of
+    seconds (DESIGN §7.2): make_case refuses anything else before drawing the subject, and
+    make_recording refuses it before rendering. Streams are unbounded and unaffected."""
+    import open_eeg_synth.case as case_module
+
+    def no_subject(spec):
+        raise AssertionError("the subject was drawn before the durations were checked")
+
+    tl = StateTimeline.constant("eyes_open")
+    for bad in (2.5, 0.0, -2.0):
+        spec = CaseSpec(seed=1, conditions=(ConditionSpec("short", bad, tl),))
+        with monkeypatch.context() as m:
+            m.setattr(case_module, "make_subject", no_subject)
+            with pytest.raises(ValueError, match="'short'.*whole number of seconds"):
+                make_case(spec)
+        with pytest.raises(ValueError, match="whole number of seconds"):
+            make_recording(spec, None, spec.conditions[0])
 
 
 def test_stream_source_keeps_working_with_its_unbounded_condition():

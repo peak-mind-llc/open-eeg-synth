@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from open_eeg_synth.case import CaseSpec, make_case
+from open_eeg_synth.case import CaseSpec, check_case_duration, make_case
 from open_eeg_synth.casefile.truth import case_truth
 from open_eeg_synth.casefile.writer import write_case
 from open_eeg_synth.recipes import resting_case
@@ -24,11 +24,25 @@ def main(argv: list[str] | None = None) -> int:
     mk.add_argument("--print-truth", action="store_true")
     args = ap.parse_args(argv)
 
-    if args.spec:
-        spec_dict = json.loads(Path(args.spec).read_text())
-        spec = CaseSpec.from_dict({**spec_dict, "seed": args.seed})
-    else:
-        spec = resting_case(args.seed, duration_s=args.duration)
+    # Both checks run before anything is built: writing the files needs edfio, and an EDF
+    # condition lasts a whole number of seconds (DESIGN §7.5).
+    try:
+        import edfio  # noqa: F401
+    except ImportError:
+        ap.error(
+            "make-case writes EDF files; install the 'edf' extra: pip install 'open-eeg-synth[edf]'"
+        )
+    try:
+        if args.spec:
+            spec_dict = json.loads(Path(args.spec).read_text())
+            spec = CaseSpec.from_dict({**spec_dict, "seed": args.seed})
+            for cond in spec.conditions:
+                check_case_duration(cond.duration_s, f"condition {cond.name!r}")
+        else:
+            check_case_duration(args.duration, "--duration")
+            spec = resting_case(args.seed, duration_s=args.duration)
+    except ValueError as exc:
+        ap.error(str(exc))
     case = make_case(spec)
     paths = write_case(args.out, case, embed_layers=args.embed_layers)
     if args.print_truth:

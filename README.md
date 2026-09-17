@@ -102,8 +102,9 @@ Or write a resting case from the command line:
 python -m open_eeg_synth make-case --seed 42 --out cases
 ```
 
-It prints the path of the truth file. `--duration` sets the length of each condition in seconds
-(default 240), `--spec` reads a full case specification from JSON, `--embed-layers` also writes every
+It prints the path of the truth file. `--duration` sets the length of each condition in whole seconds
+(default 240; EDF records are whole seconds, so `make_case` refuses anything else too), `--spec` reads
+a full case specification from JSON, `--embed-layers` also writes every
 layer to an `.npz` file, and `--print-truth` prints the truth as JSON instead of the path.
 
 ## Data and attribution

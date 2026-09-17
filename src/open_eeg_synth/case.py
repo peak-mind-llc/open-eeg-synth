@@ -384,6 +384,23 @@ def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> l
     return out
 
 
+def check_case_duration(duration_s: float, what: str) -> None:
+    """A case condition lasts a positive whole number of seconds (EDF records are whole seconds);
+    raise ``ValueError`` naming ``what`` otherwise. Streams are unbounded and never checked."""
+    d = float(duration_s)
+    if not math.isfinite(d):
+        raise ValueError(
+            f"{what} has a non-finite duration ({d!r}); a case condition is rendered whole and "
+            "must last a positive whole number of seconds - use StreamSource for an unbounded, "
+            "chunked recording instead"
+        )
+    if d <= 0 or not d.is_integer():
+        raise ValueError(
+            f"{what} lasts {d!r} s; a case condition must last a positive whole number of "
+            "seconds, because EDF records are whole seconds"
+        )
+
+
 def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Recording:
     """Render one condition's layers and attach its timeline and its plant records.
 
@@ -391,13 +408,7 @@ def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -
     :func:`casefile.truth.render_layers`, so a truth file's re-rendered plants always match what
     ``make_case`` produced: both call this, never duplicate its plant-silencing logic.
     """
-    if not math.isfinite(condition.duration_s):
-        raise ValueError(
-            f"condition {condition.name!r} has a non-finite duration_s "
-            f"({condition.duration_s!r}); make_recording/make_case render a whole condition up "
-            "front and need a finite duration - use StreamSource for an unbounded, chunked "
-            "recording instead"
-        )
+    check_case_duration(condition.duration_s, f"condition {condition.name!r}")
     eng = make_engine(spec, subject, condition)
     rec = eng.render_all(int(round(condition.duration_s * spec.fs)))
     rec.timeline = condition.timeline
@@ -406,6 +417,8 @@ def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -
 
 
 def make_case(spec: CaseSpec) -> Case:
+    for cond in spec.conditions:  # every duration is checked before the subject is drawn
+        check_case_duration(cond.duration_s, f"condition {cond.name!r}")
     subject = make_subject(spec)
     recordings = {cond.name: make_recording(spec, subject, cond) for cond in spec.conditions}
     return Case(spec, case_id_for(spec), subject, recordings)

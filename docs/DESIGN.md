@@ -1177,7 +1177,7 @@ class ArtifactSpec: kind: str; params: dict = field(default_factory=dict)   # pa
 @dataclass(frozen=True)
 class ConditionSpec:
     name: str                          # "eyes_closed", "eyes_open", … (also the truth/file key)
-    duration_s: float                  # inf only for a stream's condition (serialised as null)
+    duration_s: float                  # whole seconds for a case; inf only for a stream's (serialised as null)
     timeline: StateTimeline
 
 @dataclass(frozen=True)
@@ -1260,8 +1260,11 @@ only, so adding another kind never moves these draws), its kind's subject stream
 shared by the condition; and the sensor layer. Additive artifacts become layers, transform artifacts
 transforms. `make_recording` renders `round(duration_s · fs)` samples and attaches the condition's
 timeline and its plant records (`plant_records`: the plants its timeline does not silence, a bursting
-plant with its burst times, §4.4). A non-finite `duration_s` raises
-`ValueError`: a whole recording needs an end, and an unbounded one is a stream (§7.3). `make_case`
+plant with its burst times, §4.4). A case condition must last a
+positive whole number of seconds, because EDF records are whole seconds: anything else, including a
+non-finite `duration_s` (a whole recording needs an end, and an unbounded one is a stream, §7.3),
+raises `ValueError` naming the condition (`case.check_case_duration`). `make_case` checks every
+condition before it draws the subject; `make_recording` checks its own before rendering. `make_case`
 calls `make_subject` once and `make_recording` for each condition; `casefile.truth.render_layers`
 calls the same `make_recording`, so a re-rendered condition cannot drift from what `make_case` wrote.
 
@@ -1354,8 +1357,8 @@ and returns their paths (`CasePaths(truth, recordings, layers)`, `layers` None u
 - one `EdfSignal` per channel, `physical_dimension="uV"`, `physical_range` in µV (default ±2000 µV,
   0.06 µV per bit at 16 bits — below the sensor noise floor, wide enough for pops), data clipped to
   the range, `transducer_type="synthetic"`, label = canonical channel name;
-- whole seconds only (a trailing partial second is dropped); a 240 s, 19-channel, 256 Hz condition is
-  2,339,840 bytes;
+- whole seconds only (a case condition always lasts whole seconds, §7.2; a trailing partial second
+  of any other recording is dropped); a 240 s, 19-channel, 256 Hz condition is 2,339,840 bytes;
 - `Patient(code="SYNTHETIC", name="X", additional=("synthetic",))`, `Recording(startdate=None,
   equipment_code="open-eeg-synth")`. `startdate=None` writes the EDF+ "unknown" value; readers that
   need a date substitute their own convention (MNE reads it as 1985-01-01) and, because the file
@@ -1424,7 +1427,9 @@ layer to much less; the default two-condition case writes 18.6 MB.
 [--embed-layers] [--print-truth]` builds `recipes.resting_case(seed, duration_s=duration)`, or the
 `CaseSpec` in the given JSON file with its seed replaced by `--seed` (`--duration` is then ignored),
 and writes the files with `write_case`. It prints the truth file's path, or with `--print-truth` the
-truth itself as JSON. Requires the `edf` extra.
+truth itself as JSON. Requires the `edf` extra. Before building anything it checks that `edfio` can
+be imported and that `--duration` (or every condition of the `--spec` file) is a positive whole
+number of seconds; otherwise it exits with status 2 and says why.
 
 ---
 

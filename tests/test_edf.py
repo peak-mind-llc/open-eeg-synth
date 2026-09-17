@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from open_eeg_synth.case import make_case
+from open_eeg_synth.case import make_case, make_engine, make_subject
 from open_eeg_synth.casefile.edf import write_edf
 from open_eeg_synth.recipes import resting_case
 
@@ -11,7 +11,11 @@ edfio = pytest.importorskip("edfio")
 
 
 def test_edf_roundtrip_in_microvolts_no_annotations(tmp_path):
-    rec = make_case(resting_case(41, duration_s=4.5, artifacts=())).recordings["eyes_open"]
+    # a case condition lasts whole seconds (DESIGN §7.2); the engine renders 4.5 s here so the
+    # writer's own trimming to whole seconds is still exercised
+    spec = resting_case(41, duration_s=5.0, artifacts=())
+    engine = make_engine(spec, make_subject(spec), spec.conditions[1])
+    rec = engine.render_all(int(4.5 * 256))
     p = write_edf(tmp_path / "x.edf", rec)
     e = edfio.read_edf(str(p))
     assert [s.label for s in e.signals] == list(rec.channels)
@@ -36,7 +40,7 @@ def test_edf_has_no_annotations_and_the_right_channel_names_read_back_through_mn
     downstream tooling actually consumes these files) must agree: zero annotations, and the 19
     channel names in the recorded order."""
     mne = pytest.importorskip("mne")
-    rec = make_case(resting_case(43, duration_s=4.5, artifacts=())).recordings["eyes_open"]
+    rec = make_case(resting_case(43, duration_s=4.0, artifacts=())).recordings["eyes_open"]
     p = write_edf(tmp_path / "z.edf", rec)
     raw = mne.io.read_raw_edf(str(p), preload=False, verbose="error")
     assert len(raw.annotations) == 0

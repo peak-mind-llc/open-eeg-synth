@@ -28,8 +28,9 @@ All notable changes to this project are documented here. The format follows
   size and suggested remedies.
 - Case files: `make_case` and `write_case` write one EDF per condition (microvolts, no annotations,
   anonymised date), a sealed truth file and, optionally, every layer; `render_layers` rebuilds a
-  condition's layers from the truth file and checks them. `python -m open_eeg_synth make-case` does
-  the same from the command line.
+  condition's layers from the truth file and checks them. A case condition lasts a positive whole
+  number of seconds, as EDF records do. `python -m open_eeg_synth make-case` does the same from the
+  command line, and checks for `edfio` and whole-second durations before building anything.
 - `StreamSource`: chunked, seamless output for a recording application's mock amplifiers, with the
   classic synthesizer's constructor, an ECG on heart-rate labels, event markers and the artifact truth
   so far. Like the classic synthesizer, it accepts labels outside the head model; in 0.2.0 those rows

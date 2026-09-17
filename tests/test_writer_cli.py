@@ -82,3 +82,46 @@ def test_cli_make_case_with_spec_file_keeps_the_files_spec_apart_from_the_seed(t
     assert d["seed"] == 42
     want = CaseSpec.from_dict({**spec_dict, "seed": 42})
     assert CaseSpec.from_dict(d["spec"]) == want
+
+
+def _no_rendering(spec):
+    raise AssertionError("the case was built before the command line was checked")
+
+
+def test_cli_refuses_a_duration_that_is_not_whole_seconds_before_rendering(
+    tmp_path, monkeypatch, capsys
+):
+    """--duration, and every condition of a --spec file, must be a positive whole number of
+    seconds (EDF records are whole seconds); the command says so before building anything."""
+    from open_eeg_synth import __main__ as cli
+
+    monkeypatch.setattr(cli, "make_case", _no_rendering)
+    out = tmp_path / "out"
+    for bad in ("2.5", "0", "nan", "-3"):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["make-case", "--seed", "1", "--out", str(out), "--duration", bad])
+        assert exc.value.code == 2
+        assert "whole number of seconds" in capsys.readouterr().err
+    spec_dict = resting_case(1, duration_s=2.0).to_dict()
+    spec_dict["conditions"][1]["duration_s"] = 1.5
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(spec_dict))
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["make-case", "--seed", "1", "--out", str(out), "--spec", str(spec_path)])
+    assert exc.value.code == 2
+    assert "'eyes_open'" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_cli_checks_for_edfio_before_building_the_case(tmp_path, monkeypatch, capsys):
+    """Without the edf extra the command stops at once with the install hint, instead of after
+    rendering the whole case."""
+    from open_eeg_synth import __main__ as cli
+
+    monkeypatch.setattr(cli, "make_case", _no_rendering)
+    monkeypatch.setitem(sys.modules, "edfio", None)  # import edfio now raises ImportError
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["make-case", "--seed", "1", "--out", str(tmp_path / "out")])
+    assert exc.value.code == 2
+    assert "open-eeg-synth[edf]" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
