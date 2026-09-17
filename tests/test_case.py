@@ -9,6 +9,14 @@ import pytest
 
 from open_eeg_synth.artifacts import Event, EventArtifact, Remedy, TransformArtifact, TruthRecord
 from open_eeg_synth.artifacts.registry import ARTIFACTS, register
+from open_eeg_synth.brain.plants import (
+    FocalSlow,
+    LateralImbalance,
+    PeakShift,
+    ReducedRhythm,
+    RhythmicBursts,
+    WidespreadExcess,
+)
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.case import (
     ArtifactSpec,
@@ -16,6 +24,7 @@ from open_eeg_synth.case import (
     ConditionSpec,
     SensorSpec,
     case_id_for,
+    compiled_rhythms,
     make_case,
     make_engine,
     make_subject,
@@ -282,3 +291,59 @@ def test_whole_case_is_chunk_invariant(_test_kinds):
             for k, blocks in parts.items():
                 assert np.allclose(np.concatenate(blocks, axis=1), whole.layers[k], atol=1e-4)
             assert eng.truth() == whole.truth
+
+
+def test_plant_rhythms_are_subject_properties_too():
+    """A plant's own rhythm draws its per-patch offsets/lags once per subject too (DESIGN §8.1
+    subject:rhythm:<name>), identical in every condition — and adding a plant must not disturb
+    any base rhythm's own subject draws (Task 21 fix round 1; corrects the Task 21 report's
+    coverage claim, which checked only that the plant rhythm's name showed up, not that its
+    subject draws behaved like a base rhythm's)."""
+    plants = (RhythmicBursts(("Fz", "F3", "F4")), FocalSlow("T3"))
+    base = resting_case(9, duration_s=1.0, artifacts=())
+    planted = resting_case(9, duration_s=1.0, artifacts=(), plants=plants)
+    subj_base, subj = make_subject(base), make_subject(planted)
+    for k in subj_base.placements:  # every base rhythm's subject draws are untouched by the plants
+        assert subj_base.placements[k] == subj.placements[k]
+        assert subj_base.f0_hz[k] == subj.f0_hz[k]
+        assert subj_base.patch_f0_offsets_hz[k] == subj.patch_f0_offsets_hz[k]
+        assert subj_base.patch_lags_ms[k] == subj.patch_lags_ms[k]
+
+    engines = [make_engine(planted, subj, c) for c in planted.conditions]
+    plant_rhythms = [r for r in compiled_rhythms(planted) if r.name.startswith("plant")]
+    assert plant_rhythms  # sanity: the spec above does compile plant rhythms
+    for r in plant_rhythms:
+        ec, eo = (
+            next(p for p in e.layers[0].parts if p.name == f"brain.rhythm:{r.name}")
+            for e in engines
+        )
+        assert ec.lags == eo.lags and [o.f0 for o in ec.own] == [o.f0 for o in eo.own]
+        assert list(ec.f0_offsets_hz) == subj.patch_f0_offsets_hz[r.name]
+        assert list(ec.lags_ms) == subj.patch_lags_ms[r.name]
+        assert len(subj.patch_lags_ms[r.name]) == len(subj.placements[r.name])
+
+
+def test_case_with_plants_is_chunk_invariant():
+    """A case using all six planted-pattern primitives together, with a drowsy segment, renders
+    the same for random block partitions as in one pass (DESIGN §8.2)."""
+    plants = (
+        FocalSlow("F7", state_gain={"eyes_open": 0.0}),
+        RhythmicBursts(("Fz", "Cz"), burst_s=(1, 2), gap_s=(2, 4)),
+        LateralImbalance("alpha", "left", 0.5),
+        WidespreadExcess("theta", 2.0, extra_sites=("Pz",)),
+        PeakShift("alpha", -1.0),
+        ReducedRhythm("smr", 0.3),
+    )
+    spec = resting_case(11, duration_s=20.0, artifacts=(), plants=plants, drowsy_from_s=8.0)
+    case = make_case(spec)
+    rng = np.random.default_rng(0)
+    for cond in spec.conditions:
+        whole = case.recordings[cond.name]
+        n_total = whole.n_samples
+        eng = make_engine(spec, case.subject, cond)
+        parts, t0 = [], 0
+        while t0 < n_total:
+            n = int(min(n_total - t0, rng.integers(1, 700)))
+            parts.append(eng.render(t0, n).mixed)
+            t0 += n
+        assert np.allclose(np.concatenate(parts, axis=1), whole.mixed, atol=1e-4)
