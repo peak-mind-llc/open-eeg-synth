@@ -68,3 +68,8 @@ extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# The MNE scripts import after sys.path setup.
+"tests/realism/*" = ["E402"]
+"scripts/*" = ["E402"]
