@@ -126,6 +126,18 @@ class HeadModel:
 
 
 @lru_cache(maxsize=4)
+def head_model_channels(name: str = "colin27_19ch") -> tuple[str, ...]:
+    """Just `name`'s channel names, without loading its lead field: an ``.npz`` array is only
+    decompressed when it's indexed, so this reads none of the heavy arrays (``gain_free``,
+    ``source_pos``, ...) that ``load_head_model`` does. Cheap enough to call for every
+    ``CaseSpec``, even one that is never rendered (``CaseSpec.__post_init__`` uses it to
+    canonicalise ``channels`` against the head model actually selected)."""
+    with resources.as_file(_DATA / f"{name}.npz") as p:
+        z = np.load(p, allow_pickle=False)
+        return tuple(str(c) for c in z["channel_names"])
+
+
+@lru_cache(maxsize=4)
 def load_head_model(name: str = "colin27_19ch") -> HeadModel:
     with resources.as_file(_DATA / f"{name}.npz") as p:
         z = np.load(p, allow_pickle=False)

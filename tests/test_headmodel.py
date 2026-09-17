@@ -4,12 +4,16 @@ import numpy as np
 import pytest
 
 from open_eeg_synth.channels import CHANNELS_19, UnknownChannelError
-from open_eeg_synth.headmodel import load_head_model
+from open_eeg_synth.headmodel import head_model_channels, load_head_model
 
 
 @pytest.fixture(scope="module")
 def head():
     return load_head_model()
+
+
+def test_head_model_channels_matches_load_head_model_without_the_lead_field():
+    assert head_model_channels() == load_head_model().channels == CHANNELS_19
 
 
 def test_gain_is_free_dot_normal(head):

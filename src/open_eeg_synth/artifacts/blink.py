@@ -15,6 +15,7 @@ DEFAULT_RATES = {"eyes_open": 0.25, "eyes_closed": 0.0, "drowsy": 0.0}
 @register
 class Blink(EventArtifact):
     kind = "blink"
+    jitter_pattern = "blink"
 
     def __init__(
         self,

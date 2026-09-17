@@ -7,7 +7,14 @@ import math
 import numpy as np
 import pytest
 
-from open_eeg_synth.artifacts import Event, EventArtifact, Remedy, TransformArtifact, TruthRecord
+from open_eeg_synth.artifacts import (
+    Event,
+    EventArtifact,
+    Remedy,
+    TransformArtifact,
+    TruthRecord,
+    patterns,
+)
 from open_eeg_synth.artifacts.registry import ARTIFACTS, register
 from open_eeg_synth.brain.plants import (
     FocalSlow,
@@ -125,7 +132,9 @@ def test_artifacts_are_bound_named_per_design_and_summed(_test_kinds):
     spec = resting_case(9, duration_s=4.0, artifacts=arts)
     assert CaseSpec.from_dict(spec.to_dict()) == spec
     case = make_case(spec)
-    assert set(case.subject.pattern_jitter) == {"test_case_flat", "test_case_tick"}
+    # neither test kind declares jitter_pattern (no scalp map of its own to jitter), so neither
+    # draws or records one
+    assert case.subject.pattern_jitter == {}
     rec = case.recordings["eyes_open"]
     ticks = ["artifact:test_case_tick#1", "artifact:test_case_tick#2"]
     assert list(rec.layers) == ["brain", *ticks, "sensor", "transform:test_case_flat"]
@@ -328,7 +337,8 @@ def test_bare_case_spec_defaults_follow_design_and_render():
     """DESIGN §7.2: CaseSpec()'s brain/artifacts/conditions defaults are recipes.resting_brain(),
     recipes.ordinary_artifacts() and eyes_closed/eyes_open 240 s constant timelines, via lazy
     default factories (case.py's existing ``_default_brain`` pattern) that avoid the
-    case<->recipes import cycle (Task 20 controller ruling 1)."""
+    case<->recipes import cycle. A bare spec (seed only) is exactly what resting_case(seed)
+    builds too."""
     from open_eeg_synth.recipes import ordinary_artifacts, resting_brain
 
     spec = CaseSpec(seed=1)
@@ -338,6 +348,8 @@ def test_bare_case_spec_defaults_follow_design_and_render():
     assert [c.duration_s for c in spec.conditions] == [240.0, 240.0]
     assert [c.timeline.segments[0].state for c in spec.conditions] == ["eyes_closed", "eyes_open"]
     assert all(len(c.timeline.segments) == 1 for c in spec.conditions)  # constant timelines
+    assert spec == resting_case(1)
+    assert spec.digest() == resting_case(1).digest()
 
     # a bare spec renders both conditions with the ordinary artifacts (short override: fast test;
     # tests/test_perf.py exercises the full 240 s x2 default duration under the perf budget)
@@ -362,7 +374,7 @@ def test_bare_case_spec_defaults_follow_design_and_render():
 
 def test_channel_aliases_canonicalise_on_construction():
     """T7/T8/P7/P8 (case-insensitive) canonicalise to T3/T4/T5/T6 on CaseSpec construction, so
-    the two spellings give the same spec, digest and case id (Task 20 controller ruling 2)."""
+    the two spellings give the same spec, digest and case id."""
     aliased = tuple({"T3": "t7", "T4": "T8", "T5": "p7", "T6": "P8"}.get(c, c) for c in CHANNELS_19)
     a = resting_case(15, duration_s=1.0, artifacts=(), channels=aliased)
     b = resting_case(15, duration_s=1.0, artifacts=(), channels=CHANNELS_19)
@@ -372,17 +384,52 @@ def test_channel_aliases_canonicalise_on_construction():
     assert case_id_for(a) == case_id_for(b)
 
 
-def test_pattern_jitter_is_recorded_clipped_like_patterns_py():
-    """Subject.pattern_jitter must record the [-1, 1]-clipped z that
-    artifacts.patterns.empirical actually applies (Task 20 controller ruling 4), not the raw
-    normal draw: seed 32's emg jitter draws about -2.06, well outside the clip range patterns.py
-    enforces on every z it consumes, so an unclipped record would silently disagree with the
-    signal that was actually rendered."""
-    spec = resting_case(32, duration_s=1.0, artifacts=(ArtifactSpec("emg"),))
+def test_channels_canonicalise_against_the_selected_head_model(monkeypatch):
+    """Channel canonicalisation must consult the channel list of the head model the spec actually
+    selects, not a hard-wired CHANNELS_19: a future head model with its own, different channel
+    set must not be refused before it is even looked at."""
+    import open_eeg_synth.case as case_module
+
+    monkeypatch.setattr(case_module, "head_model_channels", lambda name: ("Cz", "Fp1"))
+    spec = CaseSpec(
+        seed=1,
+        head_model="a-future-head-model",
+        channels=("cz", "FP1"),
+        conditions=(),
+        artifacts=(),
+    )
+    assert spec.channels == ("Cz", "Fp1")
+
+
+def test_duplicate_channels_after_canonicalisation_raise():
+    """("T3", "t7") must not silently become ("T3", "T3")."""
+    with pytest.raises(ValueError, match="duplicate"):
+        resting_case(1, duration_s=1.0, artifacts=(), channels=("T3", "t7"))
+
+
+def test_pattern_jitter_is_recorded_only_for_kinds_that_apply_it():
+    """Only blink and eye movement draw an empirical, per-subject-jittered scalp map (jaw EMG's
+    map is a fixed analytic Gaussian; dead channel has no map at all), so a subject's
+    pattern_jitter must record exactly the kinds whose rendered signal actually depends on one —
+    clipped to [-1, 1] exactly as artifacts.patterns.empirical applies it."""
+    spec = resting_case(7, duration_s=1.0, artifacts=(ArtifactSpec("blink"),))
     subject = make_subject(spec)
-    raw = float(stream_rng(spec.seed, "subject:artifact:emg").normal(0.0, 0.6))
-    assert abs(raw) > 1.0  # sanity: this seed actually exercises the clip
-    assert subject.pattern_jitter["emg"] == pytest.approx(float(np.clip(raw, -1.0, 1.0)))
+    raw = float(stream_rng(spec.seed, "subject:artifact:blink").normal(0.0, 0.6))
+    assert raw < -1.0  # sanity: seed 7's raw blink draw is outside [-1, 1] (about -1.011)
+    assert subject.pattern_jitter == {"blink": -1.0}
+
+    # the bound artifact's own map is exactly what the recorded, clipped z produces
+    eng = make_engine(spec, subject, spec.conditions[0])
+    blink = next(lay for lay in eng.layers if getattr(lay, "kind", None) == "blink")
+    head = subject.head.subset(spec.channels)
+    expected = patterns.empirical(
+        "blink", spec.channels, z=subject.pattern_jitter["blink"], electrode_pos=head.electrode_pos
+    )
+    assert np.array_equal(blink.pattern, expected)
+
+    # the ordinary artifact set (blink, eye_movement, emg): emg draws no jitter at all
+    default_subject = make_subject(resting_case(1, duration_s=1.0))
+    assert set(default_subject.pattern_jitter) == {"blink", "eye_movement"}
 
 
 def test_case_with_plants_is_chunk_invariant():

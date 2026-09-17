@@ -219,6 +219,10 @@ class _ParamsMixin:
 class EventArtifact(_ParamsMixin, ABC):
     kind: ClassVar[str] = "event"
     mode: ClassVar[str] = "additive"
+    # Name of the empirical map (``patterns.empirical``'s ``name``) this plug-in draws a
+    # per-subject jitter for, or None if its pattern is fixed or has no per-subject jitter at
+    # all. A subject's pattern jitter is only worth recording for a kind where this is set.
+    jitter_pattern: ClassVar[str | None] = None
 
     def __init__(
         self, *, rate_by_state: dict[str, float], min_gap_s: float = 0.0, exclusive: bool = False
@@ -392,6 +396,7 @@ class EventArtifact(_ParamsMixin, ABC):
 class TransformArtifact(_ParamsMixin, ABC):
     kind: ClassVar[str] = "transform"
     mode: ClassVar[str] = "transform"
+    jitter_pattern: ClassVar[str | None] = None  # see EventArtifact.jitter_pattern
 
     @property
     def name(self) -> str:

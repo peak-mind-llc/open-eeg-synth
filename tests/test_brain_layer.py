@@ -17,8 +17,13 @@ from tests.helpers import band_power, psd_slope, render_whole_and_chunked
 FS = 256.0
 
 
-def _build(spec: BrainSpec, timeline, seed=1):
-    """The brain layer as make_subject/make_engine build it, on the nominal head."""
+def _build(spec: BrainSpec, timeline, seed=1, *, drop_offset=None, drop_lag=None):
+    """The brain layer as make_subject/make_engine build it, on the nominal head.
+
+    ``drop_offset``/``drop_lag`` name a rhythm to leave out of the offsets/lags dict passed to
+    ``BrainLayer``, for exercising its guard against a rhythm missing its subject draws, without
+    repeating this setup.
+    """
     head = load_head_model()
     mixing = head.smoothed_mixing(spec.background.smoothing_mm)
     wiring = wire_network(head, spec.network, FS, stream_rng(seed, "subject:network"))
@@ -32,6 +37,8 @@ def _build(spec: BrainSpec, timeline, seed=1):
         )
         f0[r.name] = r.f0_hz + (float(rng.normal(0, r.f0_jitter_hz)) if r.f0_jitter_hz else 0.0)
         offsets[r.name], lags[r.name] = draw_patch_params(r, len(placements[r.name]), rng)
+    offsets.pop(drop_offset, None)
+    lags.pop(drop_lag, None)
 
     def make():
         return BrainLayer(
@@ -174,54 +181,18 @@ def test_rows_selects_full_output_columns():
 def test_brain_layer_raises_without_subject_offsets_and_lags():
     """Only a standalone Rhythm may draw its own per-patch offsets/lags; a BrainLayer built in
     the engine path (make_subject/make_engine) must always be given the subject's draws for
-    every rhythm, and raise a clear error naming the rhythm if one is missing, instead of
-    silently falling back to Rhythm's own draw (Task 20 controller ruling 3)."""
-    spec = resting_brain()
-    head = load_head_model()
-    mixing = head.smoothed_mixing(spec.background.smoothing_mm)
-    wiring = wire_network(head, spec.network, FS, stream_rng(1, "subject:network"))
+    every rhythm, and raise a clear error naming the rhythm if either its offsets or its lags are
+    missing, instead of silently falling back to Rhythm's own draw."""
     tl = StateTimeline.constant("eyes_closed")
-    placements, f0, offsets, lags = {}, {}, {}, {}
-    for r in spec.rhythms:
-        rng = stream_rng(1, f"subject:rhythm:{r.name}")
-        placements[r.name] = (
-            region_centres(head, r.region, r.n_patches, rng)
-            if r.region
-            else placed_centres(head, r.sites, rng)
-        )
-        f0[r.name] = r.f0_hz
-        offsets[r.name], lags[r.name] = draw_patch_params(r, len(placements[r.name]), rng)
-
-    # entirely omitted: the first rhythm (alpha) is named in the error
-    with pytest.raises(ValueError, match="alpha"):
-        BrainLayer(
-            spec.rhythms, spec, head, FS, tl, mixing, wiring, placements, f0, 1, "eyes_closed"
-        )
-
-    # one rhythm missing from an otherwise-complete dict: that rhythm is named
-    partial = dict(offsets)
-    del partial["theta"]
     with pytest.raises(ValueError, match="theta"):
-        BrainLayer(
-            spec.rhythms,
-            spec,
-            head,
-            FS,
-            tl,
-            mixing,
-            wiring,
-            placements,
-            f0,
-            1,
-            "eyes_closed",
-            f0_offsets_hz=partial,
-            lags_ms=lags,
-        )
+        _build(resting_brain(), tl, drop_offset="theta")()
+    with pytest.raises(ValueError, match="beta"):
+        _build(resting_brain(), tl, drop_lag="beta")()
 
 
 def test_brain_spec_normalises_rhythms_list_to_tuple():
     """A rhythms list must normalise to a tuple on construction, or equality does not survive a
-    JSON round trip (``from_dict`` always returns a tuple) — Task 20 controller ruling 3."""
+    JSON round trip (``from_dict`` always returns a tuple)."""
     spec = resting_brain()
     listed = BrainSpec(spec.background, spec.network, list(spec.rhythms))
     assert isinstance(listed.rhythms, tuple)

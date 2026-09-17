@@ -18,7 +18,7 @@ from open_eeg_synth.brain.rhythm import RhythmSpec, draw_patch_params
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import CHANNELS_19, canonical_label
 from open_eeg_synth.engine import Engine, Recording
-from open_eeg_synth.headmodel import HeadModel, load_head_model
+from open_eeg_synth.headmodel import HeadModel, head_model_channels, load_head_model
 from open_eeg_synth.seeds import stream_rng, stream_seed
 from open_eeg_synth.sensor import SensorNoise
 
@@ -103,10 +103,18 @@ class CaseSpec:
         # Equal specs must serialise identically (digest, case_id): plain Python types only.
         canonical_fields(self)
         # Aliases (T7/T8/P7/P8, case-insensitive) canonicalise here too, so a spec built with
-        # either spelling is the very same spec, digest and case id.
-        object.__setattr__(
-            self, "channels", tuple(canonical_label(c, CHANNELS_19) for c in self.channels)
+        # either spelling is the very same spec, digest and case id. Canonicalised against the
+        # selected head model's own channel list (head_model_channels reads only that array, not
+        # the full lead field, so this stays cheap even for a spec that is never rendered) — a
+        # future head model with a different channel set must be consulted, not refused against a
+        # hard-wired CHANNELS_19.
+        canon = tuple(
+            canonical_label(c, head_model_channels(self.head_model)) for c in self.channels
         )
+        if len(set(canon)) != len(canon):
+            dupes = sorted({c for c in canon if canon.count(c) > 1})
+            raise ValueError(f"duplicate channels after alias canonicalisation: {dupes}")
+        object.__setattr__(self, "channels", canon)
         object.__setattr__(self, "plants", tuple(self.plants))
         object.__setattr__(self, "artifacts", tuple(self.artifacts))
         object.__setattr__(self, "conditions", tuple(self.conditions))
@@ -233,15 +241,25 @@ def make_subject(spec: CaseSpec) -> Subject:
     wiring = wire_network(
         head, spec.brain.network, spec.fs, stream_rng(spec.seed, "subject:network")
     )
-    # Recorded exactly as artifacts.patterns._full_map/empirical applies it: one scalar
-    # z ~ N(0, 0.6), clipped to [-1, 1] (the same clip every consumer of a subject pattern
-    # jitter enforces), so the record never disagrees with what was actually rendered.
-    jitter = {
-        k: float(
-            np.clip(stream_rng(spec.seed, f"subject:artifact:{k}").normal(0.0, 0.6), -1.0, 1.0)
-        )
-        for k in sorted({a.kind for a in spec.artifacts})
-    }
+    # Only a kind whose plug-in actually draws an empirical, per-subject-jittered map
+    # (EventArtifact/TransformArtifact.jitter_pattern is set — Blink "blink", EyeMovement "heog")
+    # gets a jitter drawn and recorded here: jaw EMG's map is a fixed analytic Gaussian and dead
+    # channel has no map at all, so sealing a jitter for them would describe nothing that was
+    # ever rendered. Recorded exactly as artifacts.patterns._full_map/empirical applies it: one
+    # scalar z ~ N(0, 0.6), clipped to [-1, 1] (the same clip every consumer of a jitter enforces),
+    # so the record never disagrees with what was actually rendered. Every other kind's random
+    # draws are unaffected: each kind's own subject stream (subject:artifact:<kind>) is named and
+    # seeded independently of every other stream, so simply not drawing from a non-jittering
+    # kind's stream cannot shift any other kind's draws.
+    from open_eeg_synth.artifacts.registry import ARTIFACTS, discover
+
+    discover()
+    jitter = {}
+    for k in sorted({a.kind for a in spec.artifacts}):
+        if getattr(ARTIFACTS.get(k), "jitter_pattern", None) is None:
+            continue
+        z = stream_rng(spec.seed, f"subject:artifact:{k}").normal(0.0, 0.6)
+        jitter[k] = float(np.clip(z, -1.0, 1.0))
     return Subject(head, mixing, placements, f0, wiring, jitter, rows, offsets, lags)
 
 

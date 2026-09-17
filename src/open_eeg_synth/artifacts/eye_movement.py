@@ -15,6 +15,7 @@ DEFAULT_RATES = {"eyes_open": 0.10, "eyes_closed": 0.02, "drowsy": 0.08}
 @register
 class EyeMovement(EventArtifact):
     kind = "eye_movement"
+    jitter_pattern = "heog"
 
     def __init__(
         self,
