@@ -205,19 +205,24 @@ def test_seed_none_reproduces_its_first_chunks_truth_and_markers_from_its_own_se
     """A StreamSource built with seed=None draws and exposes a fresh seed (.seed); a second
     StreamSource built with that seed must reproduce not just the samples but the scheduled truth
     and due markers too, over several chunks, so a recording application can log `.seed` and
-    replay a whole session, not just its waveform."""
-    ms = MarkerSchedule(kind="periodic", period_s=0.5)
+    replay a whole session, not just its waveform. Oddball markers draw from the marker rng (a
+    periodic schedule never does, so it could not have caught a marker-replay mismatch), and the
+    span is long enough (30 s) that the default artifacts' truth is essentially never empty -
+    both are asserted non-empty, not just equal to each other, so this cannot silently degenerate
+    into comparing two empty lists."""
+    ms = MarkerSchedule(kind="oddball", period_s=0.5)
     a = StreamSource(Q21, 256.0, markers=ms)
     b = StreamSource(Q21, 256.0, seed=a.seed, markers=ms)
     chunks_a, chunks_b, markers_a, markers_b = [], [], [], []
     for _ in range(5):
-        chunks_a.append(a.next_chunk(64))
-        markers_a += a.due_markers(64)
-        chunks_b.append(b.next_chunk(64))
-        markers_b += b.due_markers(64)
+        chunks_a.append(a.next_chunk(1536))
+        markers_a += a.due_markers(1536)
+        chunks_b.append(b.next_chunk(1536))
+        markers_b += b.due_markers(1536)
     assert np.array_equal(np.concatenate(chunks_a, axis=1), np.concatenate(chunks_b, axis=1))
-    assert markers_a == markers_b
+    assert markers_a == markers_b and len(markers_a) > 0
     assert [t.to_dict() for t in a.truth] == [t.to_dict() for t in b.truth]
+    assert len(a.truth) > 0
 
 
 def test_unbounded_stream_condition_serialises_and_digests():

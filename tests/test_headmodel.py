@@ -12,7 +12,7 @@ def head():
     return load_head_model()
 
 
-def test_head_model_channels_matches_load_head_model_without_the_lead_field():
+def test_head_model_channels_matches_load_head_model():
     assert head_model_channels() == load_head_model().channels == CHANNELS_19
 
 

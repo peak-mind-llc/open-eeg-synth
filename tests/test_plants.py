@@ -16,7 +16,7 @@ from open_eeg_synth.brain.plants import (
     plant_to_dict,
     register_plant,
 )
-from open_eeg_synth.case import compiled_rhythms, make_case
+from open_eeg_synth.case import compiled_rhythms, make_case, make_recording, make_subject
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.recipes import resting_brain, resting_case
 from tests.helpers import band_power, welch
@@ -24,12 +24,16 @@ from tests.helpers import band_power, welch
 FS = 256.0
 
 
-def _ec(seed, plants):
-    return (
-        make_case(resting_case(seed, duration_s=40.0, plants=plants, artifacts=()))
-        .recordings["eyes_closed"]
-        .mixed
-    )
+def _ec(seed, plants, subject=None):
+    """``subject`` reuses an already-built Subject (head perturbation + smoothing matrix, the
+    expensive part of ``make_subject``) instead of building a fresh one: safe only for a
+    modifier-only plant whose modifier leaves every rhythm's ``sites``/``region``/``n_patches``/
+    ``f0_hz`` exactly as the subject it was built from had them (hemisphere_gain/amp_scale with
+    no f0_shift_hz or extra_sites), since those are the only RhythmSpec fields make_subject's own
+    per-rhythm draws (placements, f0, patch offsets/lags) read."""
+    spec = resting_case(seed, duration_s=40.0, plants=plants, artifacts=())
+    subj = subject if subject is not None else make_subject(spec)
+    return make_recording(spec, subj, spec.conditions[0]).mixed
 
 
 def test_registry_and_roundtrip():
@@ -80,8 +84,15 @@ def test_focal_slow_raises_delta_at_site():
     assert [r.name for r in compiled_rhythms(spec)][-1] == "plant:focal_slow:F7:2.5hz"
 
 
+@pytest.mark.slow
 def test_focal_slow_is_spatially_specific():
-    """F7 has the largest increase in the planted band of any channel (not a neighbour)."""
+    """F7 has the largest increase in the planted band of any channel (not a neighbour).
+
+    test_focal_slow_raises_delta_at_site already gives the fast suite FocalSlow's core DESIGN
+    §9.2 coverage (band power at its site increases by the expected factor); this is a stronger,
+    additional claim (F7 specifically, not merely *a* channel), at 3 seeds x 2 fresh subjects
+    each (FocalSlow adds its own compiled rhythm, so unlike the modifier-only plants above, its
+    subject cannot be shared between the clean and planted variants)."""
     for seed in (100, 101, 102):
         clean, planted = _ec(seed, ()), _ec(seed, (FocalSlow("F7", f0_hz=2.5, amp_uv=45.0),))
         increase = band_power(planted, FS, 1.5, 3.5) - band_power(clean, FS, 1.5, 3.5)
@@ -89,16 +100,25 @@ def test_focal_slow_is_spatially_specific():
 
 
 def test_lateral_imbalance_and_reduced_rhythm():
+    """>= 6 seeds, average-referenced, median threshold (ruling P8): a single seed can be lucky —
+    e.g. seed 108's raw-referenced lateral-imbalance ratio alone is 0.487, above a 0.6 bound.
+
+    One subject per seed, shared across the clean/LateralImbalance/ReducedRhythm variants:
+    LateralImbalance and ReducedRhythm only scale amplitude/hemisphere gain at render time
+    (`apply_modifiers` leaves every rhythm's sites/region/n_patches/f0_hz exactly as the base
+    spec had them for these two plant kinds, since neither sets a modifier's f0_shift_hz or
+    extra_sites), so a subject built from the plant-free spec has exactly the placements/f0/
+    offsets/lags a fresh make_subject(spec_with_that_plant) would draw too. Building the subject
+    (head perturbation + smoothing matrix) is most of this test's cost."""
     o1, o2, c3 = (CHANNELS_19.index(k) for k in ("O1", "O2", "C3"))
-    # >= 6 seeds, average-referenced, median threshold (ruling P8): a single seed can be lucky —
-    # e.g. seed 108's raw-referenced lateral-imbalance ratio alone is 0.487, above a 0.6 bound.
     seeds = range(100, 106)
     lat_ratios, red_ratios = [], []
     for s in seeds:
+        subject = make_subject(resting_case(s, duration_s=40.0, artifacts=()))
         y, x, z = (
-            _ec(s, ()),
-            _ec(s, (LateralImbalance("alpha", "left", 0.4),)),
-            _ec(s, (ReducedRhythm("smr", 0.1),)),
+            _ec(s, (), subject=subject),
+            _ec(s, (LateralImbalance("alpha", "left", 0.4),), subject=subject),
+            _ec(s, (ReducedRhythm("smr", 0.1),), subject=subject),
         )
         y, x, z = (v - v.mean(axis=0, keepdims=True) for v in (y, x, z))
         a_x, a_y = band_power(x, FS, 8, 13), band_power(y, FS, 8, 13)
@@ -129,11 +149,14 @@ def test_rhythmic_bursts_description_keeps_one_decimal():
 def test_plant_state_gain_silences_a_plant_by_state():
     f7 = CHANNELS_19.index("F7")
     plant = FocalSlow("F7", f0_hz=2.5, amp_uv=45.0, state_gain={"eyes_open": 0.0})
+    # Both conditions live on the one case each build already returns; build each case once
+    # rather than once per condition checked below.
+    clean_case = make_case(resting_case(24, duration_s=20.0, artifacts=()))
+    planted_case = make_case(resting_case(24, duration_s=20.0, plants=(plant,), artifacts=()))
     for cond in ("eyes_open", "eyes_closed"):
-        clean = make_case(resting_case(24, duration_s=20.0, artifacts=())).recordings[cond].mixed
-        planted = make_case(resting_case(24, duration_s=20.0, plants=(plant,), artifacts=()))
+        clean = clean_case.recordings[cond].mixed
         ratio = (
-            band_power(planted.recordings[cond].mixed, FS, 1.5, 3.5)[f7]
+            band_power(planted_case.recordings[cond].mixed, FS, 1.5, 3.5)[f7]
             / band_power(clean, FS, 1.5, 3.5)[f7]
         )
         if cond == "eyes_open":

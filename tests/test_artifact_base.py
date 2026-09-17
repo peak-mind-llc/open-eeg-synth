@@ -788,16 +788,17 @@ def test_occupancy_prunes_spans_behind_the_watermark_over_a_long_stream():
 
 
 def test_pruning_stays_bounded_with_a_rare_exclusive_peer():
-    """A quiet-but-live peer (rate 0.002/s) commits an event only rarely, so its own `_earliest`
+    """A quiet-but-live peer (rate 0.005/s) commits an event only rarely, so its own `_earliest`
     sits at whatever sample its last (long-ago) commit ended at. Flooring the watermark on
     `_earliest` alone would let this peer hold the whole Occupancy's pruning back to that stale
     value; the fix also floors on the peer's own cached next candidate (`_next`), which keeps
-    advancing even while unconsumed, so pruning keeps working regardless."""
+    advancing even while unconsumed, so pruning keeps working regardless. Seed 10 (rather than
+    the busy peer's own seed 1) makes it fire early rather than not at all over the 600 s run."""
     cfgs = [
         dict(rate_by_state={"eyes_open": 2.0}, length_s=0.1),
-        dict(rate_by_state={"eyes_open": 0.002}, length_s=0.1),
+        dict(rate_by_state={"eyes_open": 0.005}, length_s=0.1),
     ]
-    seeds, names = (1, 2), ("artifact:a", "artifact:r")
+    seeds, names = (1, 10), ("artifact:a", "artifact:r")
 
     occ_pruned = Occupancy()
     arts_pruned, max_spans = _run_long_stream(occ_pruned, cfgs, seeds, names)
@@ -807,6 +808,8 @@ def test_pruning_stays_bounded_with_a_rare_exclusive_peer():
 
     truth = [t.to_dict() for a in arts_pruned for t in a.truth()]
     truth_control = [t.to_dict() for a in arts_control for t in a.truth()]
+    assert len(arts_pruned[1].truth()) > 0  # the rare peer really did fire, and fired early
+    assert arts_pruned[1].truth()[0].onset_s < 30.0
     assert max_spans < 20  # bounded despite the rare peer - not the ~1150 it was before the fix
     assert truth == truth_control
 

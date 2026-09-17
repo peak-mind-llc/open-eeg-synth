@@ -489,12 +489,16 @@ def test_pattern_jitter_is_recorded_only_for_kinds_that_apply_it():
     """Only blink and eye movement draw an empirical, per-subject-jittered scalp map (jaw EMG's
     map is a fixed analytic Gaussian; dead channel has no map at all), so a subject's
     pattern_jitter must record exactly the kinds whose rendered signal actually depends on one —
-    clipped to [-1, 1] exactly as artifacts.patterns.empirical applies it."""
-    spec = resting_case(7, duration_s=1.0, artifacts=(ArtifactSpec("blink"),))
+    clipped to [-1, 1] exactly as artifacts.patterns.empirical applies it. One subject (the
+    default ordinary artifact set: blink, eye movement, emg) covers every assertion below -
+    building a second just for the "emg draws no jitter" check would double this test's cost for
+    no extra coverage."""
+    spec = resting_case(7, duration_s=1.0)
     subject = make_subject(spec)
     raw = float(stream_rng(spec.seed, "subject:artifact:blink").normal(0.0, 0.6))
     assert raw < -1.0  # sanity: seed 7's raw blink draw is outside [-1, 1] (about -1.011)
-    assert subject.pattern_jitter == {"blink": -1.0}
+    assert subject.pattern_jitter["blink"] == -1.0
+    assert set(subject.pattern_jitter) == {"blink", "eye_movement"}  # not emg
 
     # the bound artifact's own map is exactly what the recorded, clipped z produces
     eng = make_engine(spec, subject, spec.conditions[0])
@@ -504,10 +508,6 @@ def test_pattern_jitter_is_recorded_only_for_kinds_that_apply_it():
         "blink", spec.channels, z=subject.pattern_jitter["blink"], electrode_pos=head.electrode_pos
     )
     assert np.array_equal(blink.pattern, expected)
-
-    # the ordinary artifact set (blink, eye_movement, emg): emg draws no jitter at all
-    default_subject = make_subject(resting_case(1, duration_s=1.0))
-    assert set(default_subject.pattern_jitter) == {"blink", "eye_movement"}
 
 
 def test_case_with_plants_is_chunk_invariant():

@@ -4,6 +4,7 @@ import pytest
 
 from open_eeg_synth.channels import (
     CHANNELS_19,
+    MIDLINE,
     MIRROR,
     UnknownChannelError,
     canonical_label,
@@ -47,6 +48,15 @@ def test_canonical_label_case_and_aliases():
 def test_mirror_is_symmetric():
     for a, b in MIRROR.items():
         assert MIRROR[b] == a
+
+
+def test_midline_membership():
+    """placed_centres (DESIGN §4.3) gives a midline channel a deterministic, nearest-to-the-
+    midline source instead of a random pick among the candidates under the electrode; this pins
+    exactly which channels get that treatment."""
+    assert MIDLINE == frozenset({"Fz", "Cz", "Pz", "Fpz", "Oz", "FCz", "CPz", "POz", "AFz"})
+    assert {"Fz", "Cz", "Pz"} <= MIDLINE  # the 19-channel montage's own midline sites
+    assert not (set(CHANNELS_19) - {"Fz", "Cz", "Pz"}) & MIDLINE  # no other 19-channel overlap
 
 
 def test_heart_labels():

@@ -17,12 +17,10 @@ from tests.helpers import band_power, psd_slope, render_whole_and_chunked
 FS = 256.0
 
 
-def _build(spec: BrainSpec, timeline, seed=1, *, drop_offset=None, drop_lag=None):
-    """The brain layer as make_subject/make_engine build it, on the nominal head.
-
-    ``drop_offset``/``drop_lag`` name a rhythm to leave out of the offsets/lags dict passed to
-    ``BrainLayer``, for exercising its guard against a rhythm missing its subject draws, without
-    repeating this setup.
+def _draws(spec: BrainSpec, seed=1):
+    """The expensive, drop-independent part of `_build`: the smoothing matrix (an O(n_sources^2)
+    computation) and every subject-level draw, computed once so a test exercising `_build`'s
+    ``drop_offset``/``drop_lag`` more than once for the same spec/seed need not pay for it again.
     """
     head = load_head_model()
     mixing = head.smoothed_mixing(spec.background.smoothing_mm)
@@ -37,6 +35,20 @@ def _build(spec: BrainSpec, timeline, seed=1, *, drop_offset=None, drop_lag=None
         )
         f0[r.name] = r.f0_hz + (float(rng.normal(0, r.f0_jitter_hz)) if r.f0_jitter_hz else 0.0)
         offsets[r.name], lags[r.name] = draw_patch_params(r, len(placements[r.name]), rng)
+    return head, mixing, wiring, placements, f0, offsets, lags
+
+
+def _build(spec: BrainSpec, timeline, seed=1, *, drop_offset=None, drop_lag=None, draws=None):
+    """The brain layer as make_subject/make_engine build it, on the nominal head.
+
+    ``drop_offset``/``drop_lag`` name a rhythm to leave out of the offsets/lags dict passed to
+    ``BrainLayer``, for exercising its guard against a rhythm missing its subject draws, without
+    repeating this setup. ``draws`` reuses a `_draws(spec, seed)` result instead of recomputing
+    it (same spec/seed only) - a caller exercising more than one drop against the same spec/seed
+    passes it explicitly so the smoothing matrix is built once, not once per drop.
+    """
+    head, mixing, wiring, placements, f0, offsets, lags = draws or _draws(spec, seed)
+    offsets, lags = dict(offsets), dict(lags)
     offsets.pop(drop_offset, None)
     lags.pop(drop_lag, None)
 
@@ -182,12 +194,15 @@ def test_brain_layer_raises_without_subject_offsets_and_lags():
     """Only a standalone Rhythm may draw its own per-patch offsets/lags; a BrainLayer built in
     the engine path (make_subject/make_engine) must always be given the subject's draws for
     every rhythm, and raise a clear error naming the rhythm if either its offsets or its lags are
-    missing, instead of silently falling back to Rhythm's own draw."""
+    missing, instead of silently falling back to Rhythm's own draw. Both checks share one
+    `_draws` (same spec, same seed), so the smoothing matrix is built once, not twice."""
+    spec = resting_brain()
     tl = StateTimeline.constant("eyes_closed")
+    draws = _draws(spec)
     with pytest.raises(ValueError, match="theta"):
-        _build(resting_brain(), tl, drop_offset="theta")()
+        _build(spec, tl, drop_offset="theta", draws=draws)()
     with pytest.raises(ValueError, match="beta"):
-        _build(resting_brain(), tl, drop_lag="beta")()
+        _build(spec, tl, drop_lag="beta", draws=draws)()
 
 
 def test_brain_spec_normalises_rhythms_list_to_tuple():
