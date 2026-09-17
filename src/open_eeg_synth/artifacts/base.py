@@ -90,8 +90,12 @@ class Occupancy:
         # Every owner (artifact) whose span has ever been pruned (see _prune_stale_spans), kept
         # forever once added - not just the most recent prune - so add_exclusive can refuse a
         # same-occupancy rebind whenever this occupancy has EVER forgotten a peer's history, not
-        # only when the most recent prune happened to touch it.
-        self._pruned_owners: set[object] = set()
+        # only when the most recent prune happened to touch it. Keyed by id(owner), not the
+        # owner itself: a plug-in's own __eq__ (any @dataclass plug-in gets one) must never decide
+        # whether two owners are "the same" here - only object identity does - so this is a
+        # dict[int, object] rather than a set, with the owner kept alive as the value (nothing
+        # else here holds a strong reference to a rebinding artifact's *replaced* peers).
+        self._pruned_owners: dict[int, object] = {}
 
     def add_exclusive(self, art: EventArtifact) -> None:
         """Register `art` as a participant, unless it already is one (a same-occupancy rebind).
@@ -117,7 +121,7 @@ class Occupancy:
         state: a refused join must leave everything exactly as it was, not half-migrated.
         """
         if art in self._exclusive:
-            stale_peers = self._pruned_owners - {art}
+            stale_peers = {oid: o for oid, o in self._pruned_owners.items() if oid != id(art)}
             if stale_peers:
                 raise ValueError(
                     f"{art!r} cannot rebind to this Occupancy: pruning has already discarded "
@@ -235,13 +239,13 @@ class Occupancy:
             return
         watermark = min(floors)
         dropped_owners = {
-            owner
+            id(owner): owner
             for span, owner in zip(self.spans, self._span_owners, strict=True)
             if span[1] <= watermark
         }
         if not dropped_owners:
             return
-        self._pruned_owners |= dropped_owners
+        self._pruned_owners.update(dropped_owners)
         kept = [
             (span, owner)
             for span, owner in zip(self.spans, self._span_owners, strict=True)
@@ -292,10 +296,22 @@ class _ParamsMixin:
     def params(self) -> dict[str, Any]:
         sig = inspect.signature(type(self).__init__)
         out = {}
-        for name in sig.parameters:
-            if name == "self":
+        for name, param in sig.parameters.items():
+            if name == "self" or param.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
                 continue
-            v = getattr(self, name)
+            try:
+                v = getattr(self, name)
+            except AttributeError:
+                # A subclass that declares no __init__ of its own inherits object.__init__(self,
+                # /, *args, **kwargs); its *args/**kwargs are already skipped above, so this path
+                # is for a subclass whose __init__ names a parameter it never stores on self -
+                # fall back to that parameter's own declared default rather than raising.
+                if param.default is inspect.Parameter.empty:
+                    continue
+                v = param.default
             out[name] = dict(v) if isinstance(v, dict) else v
         return out
 

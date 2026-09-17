@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,7 @@ from open_eeg_synth.artifacts.base import (
     Occupancy,
     Remedy,
     RenderContext,
+    TransformArtifact,
     TruthRecord,
 )
 from open_eeg_synth.artifacts.registry import ARTIFACTS, make_artifact, register
@@ -74,6 +77,24 @@ def test_registry_and_params():
     }
     with pytest.raises(KeyError):
         make_artifact("nope")
+
+
+def test_transform_artifact_params_without_its_own_init_returns_empty_dict():
+    """A `TransformArtifact` subclass that declares no `__init__` of its own inherits
+    `object.__init__(self, /, *args, **kwargs)`: `_ParamsMixin.params()` used to walk that
+    signature's `*args`/`**kwargs` entries and call `getattr(self, "args")`, raising
+    AttributeError instead of reporting "no constructor parameters" as `{}`."""
+
+    class Bare(TransformArtifact):
+        kind = "test_bare_transform"
+
+        def render_transform(self, t0, n, mix):
+            return mix
+
+        def truth(self):
+            return []
+
+    assert Bare().params() == {}
 
 
 def test_rate_follows_state_and_events_carry_truth():
@@ -816,6 +837,94 @@ def test_pruning_stays_bounded_with_a_peer_gated_off_by_the_timeline():
     assert truth == truth_control
 
 
+def _dataclass_peer_cls(register_kwargs=None, **dataclass_kwargs):
+    """Build (and register) a fresh `@dataclass` `EventArtifact` subclass: dataclass's generated
+    `__init__` runs first and sets only the declared fields, so `__post_init__` calls
+    `EventArtifact.__init__` itself to finish construction the way a hand-written plug-in would.
+    """
+
+    @dataclass(**dataclass_kwargs)
+    class DataclassPeer(EventArtifact):
+        kind = (register_kwargs or {}).get("kind", "test_dataclass_peer")
+        rate: float = 2.0
+        length_s: float = 0.3
+
+        def __post_init__(self) -> None:
+            EventArtifact.__init__(self, rate_by_state={"eyes_open": self.rate}, exclusive=True)
+
+        def make_event(self, onset):
+            n = int(self.length_s * self.fs)
+            truth = TruthRecord(
+                self.kind,
+                None,
+                None,
+                ("A",),
+                onset / self.fs,
+                (onset + n) / self.fs,
+                1.0,
+                (Remedy.MASK_SEGMENT,),
+                self.layer_name,
+                {},
+            )
+            return Event.from_pattern(onset, np.array([1.0, 0.0, 0.0]), np.ones(n), truth)
+
+    DataclassPeer.kind = (register_kwargs or {}).get("kind", "test_dataclass_peer")
+    return register(DataclassPeer)
+
+
+def test_pruning_a_dataclass_plugins_span_does_not_crash():
+    """Occupancy._pruned_owners must key owners by identity, not put them in a plain set: a
+    mutable `@dataclass` plug-in gets `__eq__` (the dataclass default) without `__hash__` (which
+    a non-frozen dataclass sets to None precisely because it defined `__eq__`), so adding one to
+    a `set` raised ``TypeError: unhashable type`` on this Occupancy's very first prune."""
+    # Different field values, so the two instances are not value-equal to each other: this
+    # isolates the `_pruned_owners` set/dict from `_exclusive`'s own (identity-first) membership
+    # check, and lands squarely on `_prune_stale_spans`, which is where the old set-typed
+    # `_pruned_owners` actually raised.
+    Peer = _dataclass_peer_cls({"kind": "test_dataclass_peer_unhashable"})
+    try:
+        tl = StateTimeline.constant("eyes_open")
+        occ = Occupancy()
+        a = Peer(rate=2.0, length_s=0.3)
+        b = Peer(rate=2.5, length_s=0.31)
+        a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+        b.bind(_ctx(tl, seed=2, occupancy=occ, name="artifact:b"))
+        for t0 in range(0, 6000, 100):
+            a.render(t0, 100)
+            b.render(t0, 100)
+        assert occ._pruned_owners  # pruning ran to completion without raising
+    finally:
+        ARTIFACTS.pop("test_dataclass_peer_unhashable", None)
+
+
+def test_pruning_keys_owners_by_identity_not_by_equality():
+    """A value-equal-but-distinct peer must not be treated as "the same owner" when
+    `add_exclusive` decides whether a same-occupancy rebind is still safe: pruning must be keyed
+    on which *object* had a span discarded, not on its current field values. `b` never itself
+    binds to `occ` (binding a second, value-equal artifact would collide with `a` in
+    `_exclusive`'s own equality-based membership check - a separate, pre-existing wrinkle this
+    item does not touch); it only ever owns one span there, exactly as a real peer's
+    already-pruned history would look from `add_exclusive`'s point of view."""
+    Peer = _dataclass_peer_cls({"kind": "test_dataclass_peer_hashable"}, unsafe_hash=True)
+    try:
+        tl = StateTimeline.constant("eyes_open")
+        occ = Occupancy()
+        a = Peer(rate=2.0, length_s=0.3)
+        b = Peer(rate=2.0, length_s=0.3)  # equal to a, but a different object
+        assert a == b and a is not b
+
+        a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+        occ.add(0, 10, owner=b)
+        for t0 in range(0, 6000, 100):
+            a.render(t0, 100)  # advances a's own floor well past b's span
+        assert any(oid != id(a) for oid in occ._pruned_owners)  # b's span really got pruned
+
+        with pytest.raises(ValueError, match="pruning"):
+            a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+    finally:
+        ARTIFACTS.pop("test_dataclass_peer_hashable", None)
+
+
 def test_same_occupancy_rebind_after_pruning_a_peers_span_is_refused():
     """A same-occupancy rebind resets the rebinding artifact's own scheduler to sample 0 and
     drops only its own spans (`bind`'s docstring) - it relies on every *other* participant's
@@ -832,7 +941,7 @@ def test_same_occupancy_rebind_after_pruning_a_peers_span_is_refused():
     for t0 in range(0, 6000, 100):
         a.render(t0, 100)
         b.render(t0, 100)
-    assert occ._pruned_owners - {a}  # the scenario really did prune a peer's span
+    assert any(oid != id(a) for oid in occ._pruned_owners)  # really did prune a peer's span
 
     with pytest.raises(ValueError, match="pruning"):
         a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
