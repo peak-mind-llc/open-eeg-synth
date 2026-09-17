@@ -9,12 +9,16 @@ from __future__ import annotations
 
 from open_eeg_synth.case import CaseSpec, make_case, make_engine, make_subject
 from open_eeg_synth.headmodel import load_head_model
+from open_eeg_synth.markers import MarkerSchedule
 from open_eeg_synth.recipes import resting_brain, resting_case
+from open_eeg_synth.stream import StreamSource
 from open_eeg_synth.version import SIGNAL_VERSION, __version__
 
 __all__ = [
     "SIGNAL_VERSION",
     "CaseSpec",
+    "MarkerSchedule",
+    "StreamSource",
     "__version__",
     "load_head_model",
     "make_case",
