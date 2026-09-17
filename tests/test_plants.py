@@ -292,7 +292,7 @@ def test_registry_rejects_duplicate_kind_and_names_unknown_kind():
     with pytest.raises(ValueError, match="focal_slow"):
         register_plant(_Impostor)
     register_plant(FocalSlow)  # re-registering the real class is a no-op, not an error
-    with pytest.raises(KeyError, match="not_a_real_plant"):
+    with pytest.raises(ValueError, match="not_a_real_plant.*known.*focal_slow"):
         plant_from_dict({"kind": "not_a_real_plant", "params": {}})
 
 

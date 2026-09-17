@@ -75,7 +75,7 @@ def test_registry_and_params():
         "exclusive": False,
         "length_s": 0.2,
     }
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match="'nope'.*known.*test_pulse"):
         make_artifact("nope")
 
 
@@ -362,10 +362,11 @@ def test_discover_skips_a_broken_entry_point_without_blocking_the_rest(monkeypat
         ARTIFACTS.pop("test_good_third_party", None)
 
 
-def test_discover_warns_on_every_call_and_names_the_failure_in_the_keyerror(monkeypatch):
-    """A broken entry point was previously reported only on the first discover() call (it went
-    quiet after that) and make_artifact's KeyError for an unrelated unknown kind never mentioned
-    it. Both should stay visible on every call."""
+def test_discover_warns_on_every_call_and_names_the_failure_in_the_unknown_kind_error(
+    monkeypatch,
+):
+    """A broken entry point is warned about on every discover() call (not only the first), and
+    make_artifact's error for an unrelated unknown kind names it too."""
     from open_eeg_synth.artifacts import registry
 
     class BrokenEP:
@@ -383,7 +384,7 @@ def test_discover_warns_on_every_call_and_names_the_failure_in_the_keyerror(monk
     with pytest.warns(UserWarning, match="still_broken"):
         registry.discover()  # second call: does not re-attempt, but warns again
 
-    with pytest.raises(KeyError, match="still_broken") as exc_info:
+    with pytest.raises(ValueError, match="still_broken") as exc_info:
         with pytest.warns(UserWarning, match="still_broken"):
             registry.make_artifact("nope")
     assert "still broken" in str(exc_info.value)  # the recorded error text itself

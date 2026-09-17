@@ -570,7 +570,7 @@ subject is drawn. Two spellings of one site in one list raise `ValueError`, and 
 extra_sites=("f3",))` adds no patch and leaves theta unchanged (it used to add a second patch under
 F3). Canonical spellings are unchanged, so existing case ids do not move. Plant kinds register by `kind` (`register_plant`; a
 second class with the same kind raises); a spec's plants round-trip through JSON as `{kind, params}`,
-and an unknown kind raises naming the known ones.
+and an unknown kind raises `ValueError` naming the known ones.
 
 **State confinement.** `state_gain` on the two rhythm-creating primitives is passed through to the
 `RhythmSpec` they compile to, so a consumer can confine a plant to some states (`{"eyes_open": 0.0}`
@@ -779,9 +779,9 @@ noise.
 ### 5.4 Registry and discovery
 
 ```python
-ARTIFACTS: dict[str, type[Artifact]]
-def register(cls) -> cls                    # decorator; key = cls.kind; duplicate kind raises
-def make_artifact(kind: str, **params) -> Artifact
+ARTIFACTS: dict[str, type[EventArtifact] | type[TransformArtifact]]
+def register(cls: type[A]) -> type[A]       # decorator; key = cls.kind; duplicate kind raises
+def make_artifact(kind: str, **params) -> EventArtifact | TransformArtifact   # unknown kind: ValueError
 def discover() -> None                      # loads entry points in group "open_eeg_synth.artifacts"
 ```
 
@@ -790,8 +790,8 @@ Built-in plug-ins register on import of `open_eeg_synth.artifacts`. Third-party 
 refers to artifacts by kind and parameter dict (`ArtifactSpec(kind, params)`), which is what the truth
 file stores. `register` refuses a class that does not define its own `kind` (inheriting one would
 silently replace the parent kind). `discover` tries each entry point once; a broken one is skipped
-without blocking the rest, warned about on every call, and named in `make_artifact`'s `KeyError` for
-an unknown kind. `make_subject` forwards each such warning once per process rather than once per case.
+without blocking the rest, warned about on every call, and named in the `ValueError` that
+`make_artifact` raises for an unknown kind (the error lists the known kinds). `make_subject` forwards each such warning once per process rather than once per case.
 
 ### 5.5 Where scalp patterns come from
 
@@ -1289,7 +1289,7 @@ class StreamSource:
     def next_chunk(self, n_samples: int) -> np.ndarray             # (n_labels, n) float32 µV; any n ≥ 1
     def due_markers(self, n_samples: int) -> list[tuple[float, str]]   # same contract as classic
     @property
-    def truth(self) -> list[TruthRecord]                           # every event scheduled so far
+    def truth(self) -> list[TruthRecord]                           # events whose onset has been rendered
     @property
     def seed(self) -> int
     @property
@@ -1322,9 +1322,10 @@ reproduces the signal, the truth and the markers. The default timeline is a cons
 recording application may pass its own scenario. Chunk size is unlimited, chunks are phase-continuous,
 and — unlike `classic`, which drew blinks per chunk — the samples do not depend on chunk size (§8.2).
 
-`truth` grows with the stream: it is every event scheduled so far, and nothing discards it (a default
-19-channel stream holds 211 events after 10 minutes and 629 after 30). A recording application that
-streams for hours should read it incrementally. The default artifacts are not exclusive, so the
+`truth` grows with the stream: it lists every artifact event whose onset lies inside the span
+rendered so far (an event pushed later, past a refractory gap, appears once its onset is rendered),
+and nothing discards it (a default 19-channel stream holds 211 events after 10 minutes and 629 after
+30). A recording application that streams for hours should read it incrementally. The default artifacts are not exclusive, so the
 scheduler keeps no spans at all (§5.2).
 
 `due_markers` follows `classic.MarkerSchedule` (kinds `"none"`, `"periodic"` and `"oddball"`; the

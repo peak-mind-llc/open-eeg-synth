@@ -4,13 +4,25 @@ from __future__ import annotations
 
 import warnings
 from importlib.metadata import entry_points
+from typing import TYPE_CHECKING, Any, TypeVar
 
-ARTIFACTS: dict[str, type] = {}
+if TYPE_CHECKING:
+    from typing import TypeAlias
+
+    from open_eeg_synth.artifacts.base import EventArtifact, TransformArtifact
+
+    ArtifactClass: TypeAlias = type[EventArtifact] | type[TransformArtifact]
+
+ARTIFACTS: dict[str, ArtifactClass] = {}
 _discovered = False
 _failed_entry_points: dict[str, str] = {}
 
+_A = TypeVar("_A", bound="ArtifactClass")
 
-def register(cls):
+
+def register(cls: _A) -> _A:
+    """Register an artifact class under its own ``kind`` (DESIGN §5.4); a class that inherits its
+    kind, or a second class with a taken kind, raises."""
     if "kind" not in cls.__dict__:
         raise TypeError(
             f"{cls.__name__} must define its own 'kind' (not inherit "
@@ -29,8 +41,8 @@ def discover() -> None:
     entry point has had its chance, so a broken one never blocks the ones after it, and a later
     call never re-attempts ones that already succeeded or failed), but a failure is remembered
     and re-warned about on *every* call to discover(), not just the one that first hit it, and
-    named in make_artifact's KeyError, so it stays visible rather than being reported once and
-    then going quiet."""
+    named in make_artifact's error for an unknown kind, so it stays visible rather than being
+    reported once and then going quiet."""
     global _discovered
     if not _discovered:
         for ep in entry_points(group="open_eeg_synth.artifacts"):
@@ -46,11 +58,12 @@ def discover() -> None:
         )
 
 
-def make_artifact(kind: str, **params):
+def make_artifact(kind: str, **params: Any) -> EventArtifact | TransformArtifact:
+    """An instance of ``kind``; an unknown kind raises ``ValueError`` listing the known kinds."""
     discover()
     if kind not in ARTIFACTS:
         msg = f"unknown artifact kind {kind!r}; known: {sorted(ARTIFACTS)}"
         if _failed_entry_points:
             msg += f"; failed entry points: {_failed_entry_points}"
-        raise KeyError(msg)
+        raise ValueError(msg)
     return ARTIFACTS[kind](**params)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Protocol, TypeVar
 
 from open_eeg_synth._canon import canonical_fields, json_plain
 from open_eeg_synth.brain.rhythm import BurstGate, RhythmSpec
@@ -130,10 +130,13 @@ class Plant(Protocol):
     def record(self) -> PlantRecord: ...
 
 
-PLANTS: dict[str, type] = {}
+PLANTS: dict[str, type[Plant]] = {}
+
+_P = TypeVar("_P", bound="type[Plant]")
 
 
-def register_plant(cls):
+def register_plant(cls: _P) -> _P:
+    """Register a plant class under its ``kind`` (a second class with the same kind raises)."""
     kind = cls.kind
     if kind in PLANTS and PLANTS[kind] is not cls:
         raise ValueError(f"plant kind {kind!r} already registered by {PLANTS[kind]}")
@@ -148,7 +151,7 @@ def plant_to_dict(p: Plant) -> dict[str, Any]:
 def plant_from_dict(d: dict[str, Any]) -> Plant:
     kind = d["kind"]
     if kind not in PLANTS:
-        raise KeyError(f"unknown plant kind {kind!r}; known: {sorted(PLANTS)}")
+        raise ValueError(f"unknown plant kind {kind!r}; known: {sorted(PLANTS)}")
     cls = PLANTS[kind]
     params = dict(d["params"])
     for k, v in params.items():

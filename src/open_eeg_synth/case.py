@@ -8,6 +8,7 @@ import math
 import warnings
 from collections import Counter
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -25,10 +26,13 @@ from open_eeg_synth.brain.placement import placed_centres, region_centres
 from open_eeg_synth.brain.rhythm import RhythmSpec, draw_patch_params
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import CHANNELS_19, canonical_labels
-from open_eeg_synth.engine import Engine, Recording
+from open_eeg_synth.engine import Engine, Layer, Recording, Transform
 from open_eeg_synth.headmodel import HeadModel, head_model_channels, load_head_model
 from open_eeg_synth.seeds import stream_rng, stream_seed
 from open_eeg_synth.sensor import SensorNoise
+
+if TYPE_CHECKING:
+    from open_eeg_synth.brain.plants import Plant, PlantRecord
 
 
 @dataclass(frozen=True)
@@ -123,7 +127,7 @@ class CaseSpec:
     head_model: str = "colin27_19ch"
     perturb_head: bool = True
     brain: BrainSpec = field(default_factory=_default_brain)
-    plants: tuple = ()  # Plant instances (brain/plants.py)
+    plants: tuple[Plant, ...] = ()
     artifacts: tuple[ArtifactSpec, ...] = field(default_factory=_default_artifacts)
     sensor: SensorSpec = SensorSpec()
     conditions: tuple[ConditionSpec, ...] = field(default_factory=_default_conditions)
@@ -314,7 +318,7 @@ def make_engine(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> E
 
     full, fs, seed = subject.head, spec.fs, spec.seed
     head = full.subset(spec.channels)  # what the amplifier records; artifacts live here
-    layers: list = [
+    layers: list[Layer] = [
         BrainLayer(
             compiled_rhythms(spec),
             spec.brain,
@@ -332,7 +336,7 @@ def make_engine(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> E
             lags_ms=subject.patch_lags_ms,
         )
     ]
-    transforms: list = []
+    transforms: list[Transform] = []
     counts = Counter(a.kind for a in spec.artifacts)
     seen: Counter = Counter()
     occupancy = Occupancy()
@@ -379,7 +383,7 @@ def case_id_for(spec: CaseSpec) -> str:
     return f"synth-{h}"
 
 
-def _plant_is_silent(plant, states: set[str]) -> bool:
+def _plant_is_silent(plant: Plant, states: set[str]) -> bool:
     """True when ``plant``'s own ``state_gain`` (``FocalSlow``/``RhythmicBursts``; absent on a
     modifier-only plant) is exactly zero in every state a condition's timeline contains, so it
     renders nothing there and its record does not belong in that condition's truth."""
@@ -389,7 +393,7 @@ def _plant_is_silent(plant, states: set[str]) -> bool:
     return all(gain.get(s, 1.0) == 0.0 for s in states)
 
 
-def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> list:
+def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> list[PlantRecord]:
     """The plant records of one condition rendered by ``engine`` (DESIGN §4.4).
 
     A plant that the condition's timeline silences everywhere has no record. A plant whose
@@ -399,7 +403,7 @@ def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> l
     """
     states = {seg.state for seg in condition.timeline.segments}
     brain = next(lay for lay in engine.layers if isinstance(lay, BrainLayer))
-    out = []
+    out: list[PlantRecord] = []
     for p in spec.plants:
         if _plant_is_silent(p, states):
             continue

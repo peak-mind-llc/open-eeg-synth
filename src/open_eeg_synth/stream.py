@@ -17,10 +17,10 @@ A label the head model lacks (a 10-10 site such as Fpz or Oz, an ear reference, 
 is not a heart label) does not raise, as it does not in ``classic``: it becomes an unmodelled row
 that carries sensor noise only, and the source warns once, naming those labels (DESIGN §7.3).
 
-``.truth`` grows for as long as the stream runs — it is every event scheduled so far, and nothing
-here caches or discards it. A recording application that streams for hours should read ``.truth``
-incrementally (e.g. record the length already consumed) rather than re-copy the whole list on every
-chunk.
+``.truth`` grows for as long as the stream runs — it is every artifact event whose onset has been
+rendered, and nothing here caches or discards it. A recording application that streams for hours
+should read ``.truth`` incrementally (e.g. record the length already consumed) rather than re-copy
+the whole list on every chunk.
 """
 
 from __future__ import annotations
@@ -158,6 +158,8 @@ class StreamSource:
 
     @property
     def truth(self) -> list[TruthRecord]:
+        """Every artifact event whose onset lies inside the span rendered so far. An event pushed
+        later (past a refractory gap or an exclusive peer) appears once its onset is rendered."""
         return self.engine.truth()
 
     def next_chunk(self, n_samples: int) -> np.ndarray:

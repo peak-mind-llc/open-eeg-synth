@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from open_eeg_synth.artifacts.base import TruthRecord
+    from open_eeg_synth.brain.plants import PlantRecord
+    from open_eeg_synth.brain.state import StateTimeline
 
 
 @runtime_checkable
@@ -15,7 +20,7 @@ class Layer(Protocol):
 
     def render(self, t0: int, n: int) -> np.ndarray: ...
 
-    def truth(self) -> list: ...
+    def truth(self) -> list[TruthRecord]: ...
 
 
 @runtime_checkable
@@ -24,7 +29,7 @@ class Transform(Protocol):
 
     def render_transform(self, t0: int, n: int, mix: np.ndarray) -> np.ndarray: ...
 
-    def truth(self) -> list: ...
+    def truth(self) -> list[TruthRecord]: ...
 
 
 @dataclass
@@ -46,9 +51,9 @@ class Recording:
     fs: float
     channels: tuple[str, ...]
     layers: dict[str, np.ndarray]
-    truth: list = field(default_factory=list)
-    plants: list = field(default_factory=list)
-    timeline: Any = None
+    truth: list[TruthRecord] = field(default_factory=list)
+    plants: list[PlantRecord] = field(default_factory=list)
+    timeline: StateTimeline | None = None
 
     @property
     def mixed(self) -> np.ndarray:
@@ -134,8 +139,8 @@ class Engine:
         layers = {k: np.concatenate(v, axis=1) for k, v in parts.items()}
         return Recording(self.fs, self.channels, layers, truth=self.truth())
 
-    def truth(self) -> list:
-        out: list = []
+    def truth(self) -> list[TruthRecord]:
+        out: list[TruthRecord] = []
         for lay in self.layers:
             out.extend(lay.truth())
         for tr in self.transforms:
