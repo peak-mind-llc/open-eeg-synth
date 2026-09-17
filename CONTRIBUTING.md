@@ -45,3 +45,6 @@ pytest -m "not slow"
   carry its notice in `THIRD_PARTY_NOTICES.md`.
 - **Synthetic is synthetic.** Generated recordings are for teaching, demos and
   testing. Never present them as recordings of a real person.
+- **Golden fingerprint.** Any change that alters the generated samples for a
+  fixed seed bumps `SIGNAL_VERSION` in `version.py` and runs
+  `scripts/update_golden.py` in the same commit.
