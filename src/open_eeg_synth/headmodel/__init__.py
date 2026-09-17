@@ -82,6 +82,48 @@ class HeadModel:
         M = (V * np.sqrt(np.clip(lam, 0.0, None))) @ V.T
         return M / np.sqrt(np.mean(np.diag(M @ M.T)))
 
+    def perturbed(
+        self,
+        rng: np.random.Generator,
+        *,
+        tilt_deg: float = 8.0,
+        gain_sd: float = 0.06,
+        blur_range: tuple[float, float] = (0.03, 0.10),
+        corr_mm: float = 15.0,
+    ) -> HeadModel:
+        """A deterministic, physically-motivated variant of this head (DESIGN §3.3)."""
+        # 1. smooth random tilt of the source normals
+        field_ = rng.standard_normal((self.n_sources, 3))
+        smooth = self._source_kernel_apply(corr_mm, field_, normalise=True)
+        smooth /= smooth.std()
+        nn = self.source_normal + np.tan(np.deg2rad(tilt_deg)) * smooth
+        nn /= np.linalg.norm(nn, axis=1, keepdims=True)
+        cosang = np.clip((nn * self.source_normal).sum(axis=1), -1.0, 1.0)
+        median_tilt = float(np.degrees(np.median(np.arccos(cosang))))
+        # 2. per-channel gain
+        g = np.clip(1.0 + gain_sd * rng.standard_normal(self.n_channels), 0.85, 1.15)
+        # 3. scalp blur
+        eps = float(rng.uniform(*blur_range))
+        if self.n_channels > 1:
+            de = np.linalg.norm(
+                self.electrode_pos[:, None, :] - self.electrode_pos[None, :, :], axis=2
+            )
+            A = np.exp(-0.5 * (de * 1000.0 / 50.0) ** 2)
+            np.fill_diagonal(A, 0.0)
+            A /= A.sum(axis=1, keepdims=True)
+            T = g[:, None] * ((1.0 - eps) * np.eye(self.n_channels) + eps * A)
+        else:  # one channel has no neighbour to blur into; the draw is still consumed
+            T = g[:, None] * np.eye(1)
+        gf = np.einsum("cd,dsk->csk", T, self.gain_free).astype(np.float32)
+        record = {
+            "tilt_deg": float(tilt_deg),
+            "corr_mm": float(corr_mm),
+            "median_tilt_deg": round(median_tilt, 2),
+            "channel_gain": [round(float(v), 4) for v in g],
+            "blur_eps": round(eps, 4),
+        }
+        return replace(self, source_normal=nn, gain_free=gf, perturbation=record)
+
 
 @lru_cache(maxsize=4)
 def load_head_model(name: str = "colin27_19ch") -> HeadModel:
