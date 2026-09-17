@@ -25,6 +25,26 @@ _HEOG_SD = np.zeros(19)
 _HEOG_SD[10], _HEOG_SD[11] = 0.3, 0.2  # F7, F8
 _HEOG_SD[0], _HEOG_SD[1] = 0.1, 0.15  # Fp1, Fp2
 
+# Positions for eight channels absent from CHANNELS_19 (and from the eegmmidb-derived data
+# file), used only for the mirror-symmetry fallback test below. Computed offline once (not at
+# test time, so the fast suite needs no MNE dependency) via MNE's colin27_1020 montage, mapped
+# into the head model's coordinate frame by a similarity (Umeyama) fit on the 19 shared channels
+# (fit RMS ~5.4 mm). Left/right mirror pairs by construction (A1/A2, TP9/TP10, P9/P10, F9/F10).
+_EXTRA_CHANNELS = ("A1", "A2", "TP9", "TP10", "P9", "P10", "F9", "F10")
+_EXTRA_POS = np.array(
+    [
+        [-0.084897, -0.021419, -0.067570],  # A1
+        [0.085371, -0.021619, -0.066517],  # A2
+        [-0.084595, -0.045377, -0.048387],  # TP9
+        [0.085586, -0.046055, -0.047512],  # TP10
+        [-0.072140, -0.072763, -0.047111],  # P9
+        [0.073396, -0.073508, -0.046468],  # P10
+        [-0.069172, 0.041779, -0.041353],  # F9
+        [0.071722, 0.042095, -0.040882],  # F10
+    ]
+)
+_MIRROR_PAIRS = (("A1", "A2"), ("TP9", "TP10"), ("P9", "P10"), ("F9", "F10"))
+
 
 @pytest.fixture
 def fake_eog(tmp_path, monkeypatch):
@@ -159,8 +179,9 @@ def test_empirical_fallback_reviewer_cases_fail_on_the_old_normalisation(fake_eo
 def test_empirical_fallback_frontal_case_with_a_present_dominant_channel(fake_eog):
     """A less adversarial case (Fp1 present and dominant either way) kept from fix round 1, as a
     second data point once the fit is anchored on nearest present channels rather than all of
-    them: F3 (present) is F9's nearest neighbour among [Fp1, Fp2, F3], but F3's own analytic
-    value is close enough to the floor that the fit still widens to include Fp1.
+    them: Fp1 (present) is F9's actual nearest neighbour among [Fp1, Fp2, F3] (78 mm vs F3's
+    86 mm), and Fp1's own analytic value is comfortably above the floor, so no widening happens -
+    the fit uses Fp1 alone.
     """
     head = load_head_model()
     pos = dict(zip(CHANNELS_19, head.electrode_pos, strict=True))
@@ -201,6 +222,40 @@ def test_empirical_real_file_blink_peaks_frontal_heog_opposite_f7_f8():
         patterns.load_eog_patterns.cache_clear()
 
 
+def test_empirical_fallback_mirror_symmetry_on_a_full_montage():
+    """A missing channel's fallback must not be lopsided at its mirror twin: a channel-sign
+    disagreement between the analytic model and the file at a near-null present anchor (e.g. the
+    model puts F7 slightly negative while the real, measured file has it solidly positive) must
+    not corrupt one side's fit while leaving the other's alone (re-review round 3 finding 2).
+    Real data file; no monkeypatching. Positions from `_EXTRA_POS` (see its comment)."""
+    head = load_head_model()
+    chs = list(CHANNELS_19) + list(_EXTRA_CHANNELS)
+    pos = np.vstack([head.electrode_pos, _EXTRA_POS])
+    patterns.load_eog_patterns.cache_clear()
+    try:
+        for name in ("blink", "heog"):
+            v = patterns.empirical(name, chs, electrode_pos=pos, z=0.0)
+            for left, right in _MIRROR_PAIRS:
+                ratio = abs(v[chs.index(left)]) / abs(v[chs.index(right)])
+                assert 0.5 <= ratio <= 2.0, (name, left, right, ratio)
+
+            # Under +-5 mm position jitter of just the extra channels, the ratio must stay
+            # within 2x in at least 90% of 200 draws (real electrode placement is not exact).
+            rng = np.random.default_rng(0)
+            for left, right in _MIRROR_PAIRS:
+                bad = 0
+                for _ in range(200):
+                    jittered = _EXTRA_POS + rng.normal(0.0, 0.005, _EXTRA_POS.shape)
+                    jpos = np.vstack([head.electrode_pos, jittered])
+                    jv = patterns.empirical(name, chs, electrode_pos=jpos, z=0.0)
+                    ratio = abs(jv[chs.index(left)]) / abs(jv[chs.index(right)])
+                    if not (0.5 <= ratio <= 2.0):
+                        bad += 1
+                assert bad <= 20, (name, left, right, f"{bad}/200 outside 2x")
+    finally:
+        patterns.load_eog_patterns.cache_clear()
+
+
 def test_load_eog_patterns_returns_read_only_arrays():
     patterns.load_eog_patterns.cache_clear()
     try:
@@ -209,3 +264,29 @@ def test_load_eog_patterns_returns_read_only_arrays():
             f["blink_mean"][0] = 99.0
     finally:
         patterns.load_eog_patterns.cache_clear()
+
+
+def test_nearest_scale_stops_widening_once_the_newly_added_anchor_clears_the_floor():
+    """The widen-past-the-floor check must look at the anchor just added, not always the
+    nearest one: if it re-checked the nearest every time, a below-floor nearest anchor would
+    force widening all the way to 3 anchors even after the 2nd already cleared the floor."""
+    # order (by distance from m=3): 0 (nearest, below floor), 1 (2nd, clears the floor), 2 (3rd).
+    analytic = np.array([0.02, 0.5, 0.9, 0.0])
+    empirical_out = np.array([0.1, 0.5, 1.5, 0.0])
+    pos = np.array([[0, 0, 0], [0, 0, 1], [0, 0, 2], [0, 0, -0.01]], dtype=float)
+    scale = patterns._nearest_scale(analytic, empirical_out, [0, 1, 2], 3, pos)
+    # Correct (stops at k=2, anchors 0+1 floored/unfloored): (0.05*0.1 + 0.5*0.5)/(0.05^2+0.5^2).
+    # Widening on to the 3rd anchor (a real bug) would instead give ~1.51.
+    assert np.isclose(scale, 1.00990099, atol=1e-6)
+
+
+def test_nearest_scale_floor_keeps_a_near_zero_anchor_from_blowing_up_the_scale():
+    """Without the floor, an anchor whose analytic value is extremely close to zero (near the
+    model's null) makes the fit's denominator near-zero too, producing a wildly unstable scale
+    even though nothing about the missing channel itself is unusual."""
+    analytic = np.array([1e-6, 0.0])
+    empirical_out = np.array([0.1, 0.0])
+    pos = np.array([[0, 0, 0], [0, 0, 0.001]], dtype=float)
+    scale = patterns._nearest_scale(analytic, empirical_out, [0], 1, pos)
+    # Floored: 0.1 * 0.05 / 0.05**2 = 2.0. Unfloored, it would be 0.1 / 1e-6 = 100000.
+    assert np.isclose(scale, 2.0)

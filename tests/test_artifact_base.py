@@ -550,6 +550,152 @@ def test_truth_before_bind_returns_empty_list():
     assert art.truth() == []
 
 
+def test_make_event_must_return_an_event_at_the_given_onset():
+    """A plug-in whose Event starts somewhere other than the onset it was given must raise,
+    naming the plug-in's kind - not spin the exclusive rebuild loop forever colliding with
+    itself at the same sample every time (re-review round 3 finding 1)."""
+
+    class PreRoll(EventArtifact):
+        kind = "test_preroll"
+
+        def make_event(self, onset):
+            n = 10
+            truth = TruthRecord(
+                "preroll",
+                None,
+                None,
+                ("A",),
+                (onset - 5) / self.fs,
+                None,
+                1.0,
+                (Remedy.LEAVE,),
+                self.layer_name,
+                {},
+            )
+            return Event.from_pattern(onset - 5, np.array([1.0]), np.ones(n), truth)
+
+    tl = StateTimeline.constant("eyes_open")
+    art = PreRoll(rate_by_state={"eyes_open": 1.0}, exclusive=True)
+    occ = Occupancy()
+    occ.add(100, 200)  # forces a push, so the rebuild path is exercised too
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:test_preroll"))
+    art._next = (1.5, True)  # candidate at sample 150, inside the busy span
+    with pytest.raises(ValueError, match="test_preroll"):
+        art._consume_next()
+
+
+def test_rebind_to_the_same_occupancy_matches_a_fresh_bind():
+    """A same-occupancy rebind must drop the artifact's own pre-rebind spans - otherwise its new
+    events get pushed around by its own stale ones, and the result depends on how many times it
+    was rebound rather than matching a fresh instance with the same seed (round 3 finding 3)."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    art = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+    art.render(0, 3000)
+    assert art.truth()
+
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))  # rebind, same occupancy
+    x_rebind = art.render(0, 3000)
+    truth_rebind = [t.to_dict() for t in art.truth()]
+
+    fresh = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    fresh.bind(_ctx(tl, seed=1, occupancy=Occupancy(), name="artifact:a"))
+    x_fresh = fresh.render(0, 3000)
+    truth_fresh = [t.to_dict() for t in fresh.truth()]
+
+    assert np.array_equal(x_rebind, x_fresh)
+    assert truth_rebind == truth_fresh
+
+
+def test_refused_bind_leaves_the_artifact_rendering_exactly_as_before():
+    """A refused bind (joining an Occupancy that has already advanced) must not half-migrate the
+    artifact (switch its ctx, drop it from the old occupancy) before the join is validated - it
+    must go on rendering exactly as it would have if the failed bind() call had never happened
+    at all (round 3 finding 4)."""
+    tl = StateTimeline.constant("eyes_open")
+    occ1, occ2 = Occupancy(), Occupancy()
+    a = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    a.bind(_ctx(tl, seed=1, occupancy=occ1, name="artifact:a"))
+    b = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    b.bind(_ctx(tl, seed=2, occupancy=occ2, name="artifact:b"))
+    b.render(0, 1000)  # advances occ2
+
+    with pytest.raises(ValueError):
+        a.bind(_ctx(tl, seed=1, occupancy=occ2, name="artifact:a"))
+
+    assert a.ctx.occupancy is occ1
+    assert a in occ1._exclusive
+    assert a not in occ2._exclusive
+
+    x = a.render(0, 3000)
+    assert np.any(x)
+    assert a.truth()
+
+    control = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
+    control.bind(_ctx(tl, seed=1, occupancy=Occupancy(), name="artifact:a"))
+    xc = control.render(0, 3000)
+    assert np.array_equal(x, xc)
+    assert [t.to_dict() for t in a.truth()] == [t.to_dict() for t in control.truth()]
+
+
+def test_rebuild_loop_rechecks_after_a_rebuild_that_changes_length():
+    """A rebuild that lands somewhere the event's own natural length is different (here:
+    longer) must have that new placement re-checked against occupancy too - rebuilding once and
+    trusting the result, without re-checking, can still leave an overlap (round 3 finding 5,
+    mirrors the re-reviewer's Z13 mutation)."""
+
+    class Grow(EventArtifact):
+        kind = "test_grow"
+
+        def make_event(self, onset):
+            n = 50 if onset < 200 else 100  # the pushed rebuild is longer
+            truth = TruthRecord(
+                "grow",
+                None,
+                None,
+                ("A",),
+                onset / self.fs,
+                (onset + n) / self.fs,
+                1.0,
+                (Remedy.LEAVE,),
+                self.layer_name,
+                {},
+            )
+            return Event.from_pattern(onset, np.array([1.0]), np.ones(n), truth)
+
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    occ.add(100, 200)
+    occ.add(260, 400)  # the grown rebuild (landing at 200, ending 300) still collides with this
+    art = Grow(rate_by_state={"eyes_open": 1.0}, exclusive=True)
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:test_grow"))
+    art._next = (1.5, True)  # candidate at sample 150, inside [100, 200)
+    art._consume_next()
+    assert art._truth_onset == [400]  # pushed past BOTH busy spans, not just the first
+    assert art._pending[0].end == 500
+    spans = sorted(occ.spans)
+    assert all(spans[i][1] <= spans[i + 1][0] for i in range(len(spans) - 1))
+
+
+def test_exclusive_tie_break_goes_to_the_first_registered_artifact():
+    """When two exclusive artifacts' next candidates land at the exact same sample, the tie must
+    resolve to whichever was registered (bound) first - deterministic, independent of anything
+    else (round 3 finding 5)."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    a = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.5)
+    b = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.5)
+    a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))  # registered first
+    b.bind(_ctx(tl, seed=2, occupancy=occ, name="artifact:b"))
+    a._next = (1.0, True)
+    b._next = (1.0, True)
+    a._rate_max = b._rate_max = 1e-9  # keep any further candidates far away
+    occ.advance_exclusive(101)
+    assert a._truth_onset == [100]  # a claims the tied sample
+    assert b._truth_onset == [150]  # b is pushed past a's [100, 150) claim
+
+
 @pytest.fixture(autouse=True, scope="module")
 def _unregister_test_plugins():
     yield
@@ -557,3 +703,5 @@ def _unregister_test_plugins():
     ARTIFACTS.pop("test_no_offset", None)
     ARTIFACTS.pop("test_state_aware", None)
     ARTIFACTS.pop("test_bare", None)
+    ARTIFACTS.pop("test_preroll", None)
+    ARTIFACTS.pop("test_grow", None)
