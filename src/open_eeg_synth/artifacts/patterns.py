@@ -50,6 +50,34 @@ _FALLBACK = {
     "heog": lambda pos: analytic_dipole(EYE_CENTRE, (1.0, 0.0, 0.0), pos),
 }
 
+# A model value below this (the model is already max-1 normalised over the requested positions)
+# is too close to that model's null to anchor a fit alone; widen to the next-nearest present
+# channel instead, and never divide by less than this either.
+_FALLBACK_FLOOR = 0.05
+
+
+def _nearest_scale(
+    analytic: np.ndarray, empirical_out: np.ndarray, found: list[int], m: int, pos: np.ndarray
+) -> float:
+    """Least-squares scale fit for missing channel `m`, anchored on its nearest present channels.
+
+    Starts with just the single nearest present channel - the best local match to a missing
+    channel's true response - and only widens to its 2nd- and 3rd-nearest present neighbours if
+    the channels included so far all sit too close to the analytic model's null (DESIGN §5.5): a
+    channel near a null carries almost no information about the fitted scale, and including one
+    on its own would let a near-zero denominator blow the scale up.
+    """
+    order = sorted(found, key=lambda i: float(np.linalg.norm(pos[i] - pos[m])))
+    k = 1
+    while k < min(3, len(order)) and abs(analytic[order[k - 1]]) < _FALLBACK_FLOOR:
+        k += 1
+    anchors = order[:k]
+    a = analytic[anchors]
+    a_safe = np.where(a >= 0.0, 1.0, -1.0) * np.maximum(np.abs(a), _FALLBACK_FLOOR)
+    e = empirical_out[anchors]
+    denom = float(a_safe @ a_safe)
+    return float(a_safe @ e) / denom if denom > 0.0 else 0.0
+
 
 def empirical(
     name: str,
@@ -62,12 +90,13 @@ def empirical(
 ) -> np.ndarray:
     """Subject-averaged ICA map for ``name`` on ``channels``; unknowns fall back to analytic.
 
-    A fallback channel is scaled to the file's own units: least squares fits the analytic model
-    to the empirical values at whichever requested channels *are* in the file, and that one scalar
-    is applied to the analytic values at the missing channels, so a fallback sits on the same scale
-    as its neighbours rather than being independently max-normalised over just the requested set.
-    Only when none of the requested channels are in the file (no anchor to fit against) does the
-    fallback fall back to the analytic model's own max-1 normalisation.
+    A fallback channel is scaled to the file's own units: for each missing channel, least squares
+    fits the analytic model to the empirical values at its nearest present requested channels (up
+    to 3, widening past the nearest one only when needed for a stable fit - see `_nearest_scale`),
+    and applies that one scalar to the analytic value at the missing channel, so a fallback sits on
+    the same scale as its neighbours rather than being independently max-normalised over just the
+    requested set. Only when none of the requested channels are in the file (no anchor to fit
+    against at all) does the fallback fall back to the analytic model's own max-1 normalisation.
     """
     if z is None:
         z = float(rng.normal(0.0, jitter_sd)) if rng is not None else 0.0
@@ -89,12 +118,12 @@ def empirical(
             raise UnknownChannelError(
                 f"{name}: no empirical map for {[channels[i] for i in missing]} and no positions"
             )
-        analytic = _FALLBACK[name](np.asarray(electrode_pos, float))
+        pos = np.asarray(electrode_pos, float)
+        analytic = _FALLBACK[name](pos)
         if found:
-            a, e = analytic[found], out[found]
-            denom = float(a @ a)
-            scale = float(a @ e) / denom if denom > 0.0 else 0.0
-            out[missing] = scale * analytic[missing]
+            for m in missing:
+                scale = _nearest_scale(analytic, out, found, m, pos)
+                out[m] = scale * analytic[m]
         else:
             out[missing] = analytic[missing]
     return out / np.abs(out).max()
