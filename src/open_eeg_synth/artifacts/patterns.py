@@ -19,9 +19,15 @@ EYE_CENTRE = np.array([0.0, 0.085, -0.020])  # between the eyes, head frame, met
 
 @lru_cache(maxsize=1)
 def load_eog_patterns() -> dict:
+    """Load the derived eye-pattern arrays, cached; every array is read-only (shared cache)."""
     with resources.as_file(_EOG_PATH) as p:
         z = np.load(p, allow_pickle=False)
-        return {k: z[k] for k in z.files}
+        out = {}
+        for k in z.files:
+            arr = np.array(z[k])
+            arr.flags.writeable = False
+            out[k] = arr
+        return out
 
 
 def analytic_focal(
@@ -54,18 +60,28 @@ def empirical(
     electrode_pos: np.ndarray | None = None,
     z: float | None = None,
 ) -> np.ndarray:
-    """Subject-averaged ICA map for ``name`` on ``channels``; unknowns fall back to analytic."""
+    """Subject-averaged ICA map for ``name`` on ``channels``; unknowns fall back to analytic.
+
+    A fallback channel is scaled to the file's own units: least squares fits the analytic model
+    to the empirical values at whichever requested channels *are* in the file, and that one scalar
+    is applied to the analytic values at the missing channels, so a fallback sits on the same scale
+    as its neighbours rather than being independently max-normalised over just the requested set.
+    Only when none of the requested channels are in the file (no anchor to fit against) does the
+    fallback fall back to the analytic model's own max-1 normalisation.
+    """
     if z is None:
         z = float(rng.normal(0.0, jitter_sd)) if rng is not None else 0.0
     f = load_eog_patterns()
     names = [str(c) for c in f["channel_names"]]
     mean, sd = f[f"{name}_mean"], f[f"{name}_sd"]
     out = np.empty(len(channels))
-    missing = []
+    found: list[int] = []
+    missing: list[int] = []
     for i, ch in enumerate(channels):
         try:
             j = names.index(canonical_label(ch, names))
             out[i] = mean[j] + z * sd[j]
+            found.append(i)
         except UnknownChannelError:
             missing.append(i)
     if missing:
@@ -73,6 +89,12 @@ def empirical(
             raise UnknownChannelError(
                 f"{name}: no empirical map for {[channels[i] for i in missing]} and no positions"
             )
-        fb = _FALLBACK[name](np.asarray(electrode_pos, float))
-        out[missing] = fb[missing]
+        analytic = _FALLBACK[name](np.asarray(electrode_pos, float))
+        if found:
+            a, e = analytic[found], out[found]
+            denom = float(a @ a)
+            scale = float(a @ e) / denom if denom > 0.0 else 0.0
+            out[missing] = scale * analytic[missing]
+        else:
+            out[missing] = analytic[missing]
     return out / np.abs(out).max()
