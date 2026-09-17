@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from open_eeg_synth._canon import canonical_fields
 from open_eeg_synth.dsp import PinkCascade
 from open_eeg_synth.headmodel import HeadModel
 
@@ -18,6 +19,9 @@ class BackgroundSpec:
     exponent: float = 1.2
     rms_uv: float = 20.0
     network_frac: float = 0.5
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
 
 
 class Background:

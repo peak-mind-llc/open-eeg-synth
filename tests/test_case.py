@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+import dataclasses
+import json
+import math
+
 import numpy as np
 import pytest
 
 from open_eeg_synth.artifacts import Event, EventArtifact, Remedy, TransformArtifact, TruthRecord
 from open_eeg_synth.artifacts.registry import ARTIFACTS, register
-from open_eeg_synth.case import ArtifactSpec, CaseSpec, make_case, make_subject
+from open_eeg_synth.brain.state import StateTimeline
+from open_eeg_synth.case import (
+    ArtifactSpec,
+    CaseSpec,
+    ConditionSpec,
+    SensorSpec,
+    case_id_for,
+    make_case,
+    make_engine,
+    make_subject,
+)
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.headmodel import HeadModel
 from open_eeg_synth.recipes import resting_case
@@ -148,3 +162,123 @@ def test_drowsy_segment_is_inserted_into_eyes_closed_only():
     ]
     assert [s.state for s in eo.timeline.segments] == ["eyes_open"]
     assert CaseSpec.from_dict(spec.to_dict()) == spec
+
+
+def _json_round_trip(spec: CaseSpec) -> CaseSpec:
+    return CaseSpec.from_dict(json.loads(json.dumps(spec.to_dict(), allow_nan=False)))
+
+
+def test_identity_is_stable_across_numeric_types_and_json():
+    """Equal specs serialise identically: ints and numpy scalars are normalised on construction,
+    so digest and case_id agree before and after a strict-JSON round trip (DESIGN §7.2)."""
+    base = resting_case(1, duration_s=8.0, artifacts=())
+    bg = dataclasses.replace(base.brain.background, rms_uv=int(base.brain.background.rms_uv))
+    variants = [
+        resting_case(1, duration_s=8, artifacts=()),
+        resting_case(np.int64(1), duration_s=np.float32(8.0), fs=256, artifacts=()),
+        dataclasses.replace(
+            base, seed=np.int64(1), fs=np.int64(256), sensor=SensorSpec(white_uv=np.float32(1.5))
+        ),
+        dataclasses.replace(base, brain=dataclasses.replace(base.brain, background=bg)),
+    ]
+    for v in variants:
+        assert v == base
+        assert v.digest() == base.digest() and case_id_for(v) == case_id_for(base)
+        back = _json_round_trip(v)
+        assert back == base and back.digest() == base.digest()
+        assert type(back.seed) is int and type(back.fs) is float
+    assert CaseSpec(seed=np.int64(3)).digest() == CaseSpec(seed=3).digest()
+    with_params = dataclasses.replace(
+        base, artifacts=(ArtifactSpec("x", {"amp": np.float32(2.5), "sides": ("l", "r")}),)
+    )
+    back = _json_round_trip(with_params)
+    assert back == with_params and back.digest() == with_params.digest()
+
+
+def test_artifact_streams_are_indexed_within_their_kind(_test_kinds):
+    """<condition>:artifact:<kind>:<i> counts instances of the same kind only (DESIGN §8.1), so
+    putting an artifact of another kind first leaves the existing layers' draws unchanged."""
+    ticks = (ArtifactSpec("test_case_tick"), ArtifactSpec("test_case_tick", {"amp_uv": 5.0}))
+    a = make_case(resting_case(9, duration_s=8.0, artifacts=ticks))
+    b = make_case(
+        resting_case(9, duration_s=8.0, artifacts=(ArtifactSpec("test_case_flat"), *ticks))
+    )
+    for cond in ("eyes_closed", "eyes_open"):
+        for name in ("artifact:test_case_tick#1", "artifact:test_case_tick#2"):
+            la, lb = a.recordings[cond].layers[name], b.recordings[cond].layers[name]
+            assert np.abs(la).max() > 0 and np.array_equal(la, lb)
+
+
+def test_condition_names_must_be_unique():
+    tl = StateTimeline.constant("eyes_open", 1.0)
+    with pytest.raises(ValueError, match="duplicate condition"):
+        CaseSpec(seed=1, conditions=(ConditionSpec("a", 1.0, tl), ConditionSpec("a", 1.0, tl)))
+
+
+def test_infinite_durations_survive_strict_json():
+    spec = CaseSpec(
+        seed=1,
+        conditions=(ConditionSpec("stream", math.inf, StateTimeline.constant("eyes_open")),),
+    )
+    back = _json_round_trip(spec)
+    assert back == spec and back.digest() == spec.digest()
+    assert back.conditions[0].duration_s == math.inf
+    assert back.conditions[0].timeline.segments[0].t1_s == math.inf
+
+
+def test_patch_offsets_and_lags_are_subject_properties():
+    """Per-patch centre-frequency offsets and lags belong to the subject (DESIGN §8.1
+    subject:rhythm:<name>): identical in every condition, seed-dependent, recorded."""
+    spec = resting_case(5, duration_s=1.0, artifacts=())
+    subj = make_subject(spec)
+    engines = [make_engine(spec, subj, c) for c in spec.conditions]
+    for r in spec.brain.rhythms:
+        ec, eo = (
+            next(p for p in e.layers[0].parts if p.name == f"brain.rhythm:{r.name}")
+            for e in engines
+        )
+        assert ec.lags == eo.lags and [o.f0 for o in ec.own] == [o.f0 for o in eo.own]
+        assert list(ec.f0_offsets_hz) == subj.patch_f0_offsets_hz[r.name]
+        assert list(ec.lags_ms) == subj.patch_lags_ms[r.name]
+        assert len(subj.patch_lags_ms[r.name]) == len(subj.placements[r.name])
+        assert all(0.0 <= lag <= r.lag_ms for lag in subj.patch_lags_ms[r.name])
+    alpha = subj.patch_f0_offsets_hz["alpha"]
+    assert len(set(alpha)) == len(alpha) and max(abs(v) for v in alpha) > 0.05
+    again = make_subject(spec)
+    assert again.patch_f0_offsets_hz == subj.patch_f0_offsets_hz
+    assert again.patch_lags_ms == subj.patch_lags_ms
+    other = make_subject(resting_case(6, duration_s=1.0, artifacts=()))
+    assert other.patch_f0_offsets_hz["alpha"] != alpha
+    d = subj.to_dict()
+    assert d["patch_f0_offsets_hz"] == subj.patch_f0_offsets_hz
+    assert d["patch_lags_ms"] == subj.patch_lags_ms
+    json.dumps(d, allow_nan=False)
+
+
+def test_whole_case_is_chunk_invariant(_test_kinds):
+    """Every layer of a two-condition case with artifacts and a drowsy segment renders the same
+    for random block partitions as in one pass (DESIGN §8.2)."""
+    arts = (
+        ArtifactSpec("test_case_tick"),
+        ArtifactSpec("test_case_flat"),
+        ArtifactSpec("test_case_tick", {"amp_uv": 5.0}),
+    )
+    spec = resting_case(21, duration_s=20.0, artifacts=arts, drowsy_from_s=10.0)
+    case = make_case(spec)
+    rng = np.random.default_rng(0)
+    for cond in spec.conditions:
+        whole = case.recordings[cond.name]
+        n_total = whole.n_samples
+        for _ in range(2):
+            eng = make_engine(spec, case.subject, cond)
+            parts: dict[str, list[np.ndarray]] = {}
+            t0 = 0
+            while t0 < n_total:
+                n = int(min(n_total - t0, rng.integers(1, 700)))
+                for k, v in eng.render(t0, n).layers.items():
+                    parts.setdefault(k, []).append(v)
+                t0 += n
+            assert list(parts) == list(whole.layers)
+            for k, blocks in parts.items():
+                assert np.allclose(np.concatenate(blocks, axis=1), whole.layers[k], atol=1e-4)
+            assert eng.truth() == whole.truth

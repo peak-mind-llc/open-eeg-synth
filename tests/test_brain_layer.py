@@ -5,7 +5,7 @@ import numpy as np
 from open_eeg_synth.brain.layer import BrainLayer, BrainSpec
 from open_eeg_synth.brain.network import wire_network
 from open_eeg_synth.brain.placement import placed_centres, region_centres
-from open_eeg_synth.brain.rhythm import Rhythm
+from open_eeg_synth.brain.rhythm import Rhythm, draw_patch_params
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.headmodel import load_head_model
@@ -17,10 +17,11 @@ FS = 256.0
 
 
 def _build(spec: BrainSpec, timeline, seed=1):
+    """The brain layer as make_subject/make_engine build it, on the nominal head."""
     head = load_head_model()
     mixing = head.smoothed_mixing(spec.background.smoothing_mm)
     wiring = wire_network(head, spec.network, FS, stream_rng(seed, "subject:network"))
-    placements, f0 = {}, {}
+    placements, f0, offsets, lags = {}, {}, {}, {}
     for r in spec.rhythms:
         rng = stream_rng(seed, f"subject:rhythm:{r.name}")
         placements[r.name] = (
@@ -29,6 +30,7 @@ def _build(spec: BrainSpec, timeline, seed=1):
             else placed_centres(head, r.sites, rng)
         )
         f0[r.name] = r.f0_hz + (float(rng.normal(0, r.f0_jitter_hz)) if r.f0_jitter_hz else 0.0)
+        offsets[r.name], lags[r.name] = draw_patch_params(r, len(placements[r.name]), rng)
 
     def make():
         return BrainLayer(
@@ -43,6 +45,8 @@ def _build(spec: BrainSpec, timeline, seed=1):
             f0,
             seed,
             "eyes_closed",
+            f0_offsets_hz=offsets,
+            lags_ms=lags,
         )
 
     return make
@@ -72,15 +76,21 @@ def test_brain_layer_chunk_invariance_and_eyes_closed_alpha():
 
 # Calibrated medians of this test's own measurement (brain layer only, nominal head, eyes closed,
 # average reference, 60 s, the 9 seeds below) for the recipe calibrated in Task 12
-# (recipes.py): O1 alpha share 0.567 (range 0.20-0.76), Cz 1-45 Hz RMS 11.7 uV (11.1-14.0).
+# (recipes.py): O1 alpha share 0.567 (range 0.22-0.76), Cz 1-45 Hz RMS 11.9 uV (11.1-13.9).
+#
+# These pins belong to this fixed seed set, which reads low: the population medians of the same
+# measurement over 270 seeds (0-269) are O1 share 0.63 and Cz 12.8 uV. Four of the nine subjects
+# (seeds 2, 3, 100, 101: shares 0.22-0.43) drew alpha patches that project weakly onto O1, which
+# is where the population's lower tail comes from. Thirty disjoint 9-seed sets from those 270
+# have medians from 0.46 to 0.83, so a different seed set needs its own pinned value.
 CAL_O1_ALPHA_SHARE = 0.567
-CAL_CZ_RMS_1_45_UV = 11.7
+CAL_CZ_RMS_1_45_UV = 11.9
 
 
 def test_calibrated_amplitudes_median_across_seeds():
     """The resting recipe's calibrated amplitudes, judged as medians over subjects.
 
-    One seed is not representative (O1 alpha share spans 0.20-0.76 over these nine), so both
+    One seed is not representative (O1 alpha share spans 0.22-0.76 over these nine), so both
     numbers are medians. Alpha share = 8-13 / 1-40 Hz power at O1, pinned to at least 0.45 (the
     realism target is ~0.6, DESIGN §9.1). Cz RMS is read over 1-45 Hz, as §9.1 measures it (the
     unfiltered value is dominated by sub-1 Hz background), within +/-30 % of the calibrated median.
@@ -111,7 +121,8 @@ def test_eyes_open_collapses_alpha():
 def test_brain_layer_part_matches_standalone_rhythm_stream():
     """A BrainLayer's alpha part must be seeded exactly like a standalone Rhythm built
     from the DESIGN §8.1 stream ``<condition>:rhythm:alpha`` (fix round 1, item 3d, P17;
-    mutation M5 points the rhythm stream at the background stream instead)."""
+    mutation M5 points the rhythm stream at the background stream instead), with its
+    per-patch offsets and lags drawn from ``subject:rhythm:alpha``."""
     head = load_head_model()
     spec = resting_brain()
     tl = StateTimeline.constant("eyes_closed")
@@ -126,9 +137,20 @@ def test_brain_layer_part_matches_standalone_rhythm_stream():
     rng = stream_rng(seed, "subject:rhythm:alpha")
     centres = region_centres(head, alpha_spec.region, alpha_spec.n_patches, rng)
     f0 = alpha_spec.f0_hz + float(rng.normal(0, alpha_spec.f0_jitter_hz))
+    # per-patch offsets and lags are subject draws, continuing subject:rhythm:alpha (DESIGN §8.1)
+    offsets, lags = draw_patch_params(alpha_spec, len(centres), rng)
     standalone = Rhythm(
-        head, FS, alpha_spec, tl, centres, f0, stream_seed(seed, "eyes_closed:rhythm:alpha")
+        head,
+        FS,
+        alpha_spec,
+        tl,
+        centres,
+        f0,
+        stream_seed(seed, "eyes_closed:rhythm:alpha"),
+        f0_offsets_hz=offsets,
+        lags_ms=lags,
     )
+    assert part.f0_offsets_hz == offsets and part.lags_ms == lags
 
     n = int(5 * FS)
     assert np.array_equal(part.render(0, n), standalone.render(0, n))

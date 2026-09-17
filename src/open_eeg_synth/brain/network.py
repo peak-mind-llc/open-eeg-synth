@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from open_eeg_synth._canon import canonical_fields
 from open_eeg_synth.brain.background import WARM_UP_S, BackgroundSpec
 from open_eeg_synth.dsp import PinkCascade
 from open_eeg_synth.headmodel import HeadModel
@@ -19,6 +20,9 @@ class NetworkSpec:
     velocity_m_s: float = 6.0
     synaptic_ms: float = 5.0
     width_mm: float = 15.0
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
 
 
 @dataclass(frozen=True)

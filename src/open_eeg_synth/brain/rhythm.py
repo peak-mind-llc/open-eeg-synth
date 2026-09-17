@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
 
+from open_eeg_synth._canon import canonical_fields
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import MIRROR
 from open_eeg_synth.dsp import OU
@@ -18,6 +20,9 @@ class BurstGate:
     on_s: tuple[float, float] = (1.0, 3.0)
     off_s: tuple[float, float] = (8.0, 25.0)
     ramp_s: float = 0.3
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,7 @@ class RhythmSpec:
     burst: BurstGate | None = None
 
     def __post_init__(self) -> None:
+        canonical_fields(self)
         if bool(self.sites) == bool(self.region):
             raise ValueError(
                 f"RhythmSpec {self.name!r} needs exactly one of sites or region; got "
@@ -166,7 +172,30 @@ def _orient_patches(
     return oriented
 
 
+PATCH_F0_SD_HZ = 0.3  # spread of each patch's own centre frequency around f0 (DESIGN §4.3)
+
+
+def draw_patch_params(
+    spec: RhythmSpec, n_patches: int, rng: np.random.Generator
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Per-patch centre-frequency offsets (Hz, N(0, 0.3)) and driver lags (ms, U(0, lag_ms)).
+
+    These describe the subject, not the passage of time: a case draws them once from
+    ``subject:rhythm:<name>`` (DESIGN §8.1) so every condition's rhythm uses the same values.
+    """
+    offsets = tuple(float(v) for v in rng.normal(0.0, PATCH_F0_SD_HZ, n_patches))
+    lags = tuple(float(v) for v in rng.uniform(0.0, spec.lag_ms, n_patches))
+    return offsets, lags
+
+
 class Rhythm:
+    """One rhythm's patches. ``seq`` seeds the time courses (driver, own oscillators, burst gate).
+
+    ``f0_offsets_hz`` and ``lags_ms`` are the subject's per-patch values (see
+    :func:`draw_patch_params`); when omitted, a standalone rhythm draws them from a child of
+    ``seq`` that no time course uses, so supplying them never reshuffles the time courses.
+    """
+
     def __init__(
         self,
         head: HeadModel,
@@ -176,12 +205,27 @@ class Rhythm:
         centres: list[int],
         f0_hz: float,
         seq: np.random.SeedSequence,
+        *,
+        f0_offsets_hz: Sequence[float] | None = None,
+        lags_ms: Sequence[float] | None = None,
     ) -> None:
         self.spec, self.fs, self.timeline = spec, float(fs), timeline
         self.name = f"brain.rhythm:{spec.name}"
-        children = seq.spawn(len(centres) + 2)  # consumes seq: it cannot be spawned again
+        # children: driver, one per patch, the burst gate, the standalone patch-parameter draw
+        children = seq.spawn(len(centres) + 3)  # consumes seq: it cannot be spawned again
         rngs = [np.random.Generator(np.random.PCG64(c)) for c in children]
-        misc = rngs[-1]
+        gate_rng, param_rng = rngs[-2], rngs[-1]
+        if f0_offsets_hz is None or lags_ms is None:
+            drawn_offsets, drawn_lags = draw_patch_params(spec, len(centres), param_rng)
+            f0_offsets_hz = drawn_offsets if f0_offsets_hz is None else f0_offsets_hz
+            lags_ms = drawn_lags if lags_ms is None else lags_ms
+        self.f0_offsets_hz = tuple(float(v) for v in f0_offsets_hz)
+        self.lags_ms = tuple(float(v) for v in lags_ms)
+        if not len(self.f0_offsets_hz) == len(self.lags_ms) == len(centres):
+            raise ValueError(
+                f"rhythm {spec.name!r}: {len(centres)} patches but "
+                f"{len(self.f0_offsets_hz)} offsets and {len(self.lags_ms)} lags"
+            )
         targets = [head.index(s) for s in spec.sites] if spec.sites else None
         raw = [head.patch_map(c, spec.width_mm) for c in centres]
 
@@ -216,15 +260,15 @@ class Rhythm:
             ]
         )
 
-        self.lags = [int(round(misc.uniform(0.0, spec.lag_ms) / 1000.0 * fs)) for _ in centres]
+        self.lags = [int(round(lag / 1000.0 * self.fs)) for lag in self.lags_ms]
         self.maxlag = max(self.lags) if self.lags else 0
         self.driver = _Oscillator(fs, f0_hz, spec, rngs[0])
         self.own = [
-            _Oscillator(fs, f0_hz + float(rngs[i + 1].normal(0.0, 0.3)), spec, rngs[i + 1])
-            for i in range(len(centres))
+            _Oscillator(fs, f0_hz + off, spec, rngs[i + 1])
+            for i, off in enumerate(self.f0_offsets_hz)
         ]
         self.hist = self.driver.render(self.maxlag) if self.maxlag > 0 else np.zeros(0)
-        self.gate = _Gate(spec.burst, fs, misc) if spec.burst is not None else None
+        self.gate = _Gate(spec.burst, fs, gate_rng) if spec.burst is not None else None
         self.w_shared, self.w_own = np.sqrt(1.0 - spec.indep), np.sqrt(spec.indep)
 
     def render(self, t0: int, n: int) -> np.ndarray:

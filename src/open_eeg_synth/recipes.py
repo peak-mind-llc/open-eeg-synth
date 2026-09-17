@@ -18,21 +18,23 @@ from open_eeg_synth.channels import CHANNELS_19
 # = 8-13 Hz / 1-40 Hz Welch power (tests.helpers.band_power), exponent = tests.helpers.psd_slope.
 #
 #   median over 96 seeds       before (shipped)     after              target
-#   Cz RMS 1-45 Hz, EC / EO    13.9 / 13.7 uV       13.3 / 12.8 uV     real medians 13.7 / 12.7
-#   O1 alpha share EC (p10-90) 0.37 (0.12-0.68)     0.60 (0.37-0.81)   real 0.58 (0.35-0.79)
+#   Cz RMS 1-45 Hz, EC / EO    13.9 / 13.7 uV       13.2 / 12.8 uV     real medians 13.7 / 12.7
+#   O1 alpha share EC (p10-90) 0.37 (0.12-0.68)     0.60 (0.36-0.80)   real 0.58 (0.35-0.79)
 #   O1 alpha share EO          0.14                 0.20               real band 0.05-0.30
-#   Fz alpha share EC / EO     0.17 / 0.10          0.38 / 0.12        feasibility 0.40 / 0.14
+#   Fz alpha share EC / EO     0.17 / 0.10          0.38 / 0.13        feasibility 0.40 / 0.14
 #   exponent EC / EO           1.24 / 1.24          1.24 / 1.24        real band 0.8-1.4
-#   O1-O2 8-13 Hz correlation  0.51 (5/96 below 0)  0.80 (0/96)        real: high
+#   O1-O2 8-13 Hz correlation  0.51 (5/96 below 0)  0.79 (0/96)        real: high
+# ("after" re-measured once per-patch offsets/lags became subject draws and colliding mirror
+# patches were redrawn; neither moved a median by more than 0.01 or 0.1 uV.)
 #
-# The Cz RMS must be read band-limited: the 1/f background runs down to 0.03 Hz, so about two
-# thirds of the unfiltered variance lies below 1 Hz and an unfiltered std reads ~21 uV at the same
-# settings (an unfiltered reading is what once made the background look twice too loud). Knobs:
-_BACKGROUND_RMS_UV = 18.0  # was 20: Cz 1-45 Hz RMS 13.9 -> 13.3 uV EC, 13.7 -> 12.8 uV EO
+# The Cz RMS must be read band-limited: the 1/f background runs down to 0.03 Hz, so more than half
+# of the unfiltered variance lies below 1 Hz and an unfiltered std reads ~19 uV at these settings
+# (an unfiltered reading is what once made the background look twice too loud). Knobs:
+_BACKGROUND_RMS_UV = 18.0  # was 20: Cz 1-45 Hz RMS 13.9 -> 13.2 uV EC, 13.7 -> 12.8 uV EO
 _ALPHA_AMP_UV = 31.0  # was 20: O1 alpha share EC 0.37 -> 0.60 (with the geometry below)
 # 4 patches of 10 mm put the loudest alpha channel anywhere from P3/P4/Pz to T5/T6 and gave an O1
 # share spread of 0.12-0.68 (p10-p90), far wider than real; 10 patches of 25 mm narrow it to
-# 0.37-0.81 and lift Fz toward the feasibility test's 0.4 (0.33 at 20 mm). `indep` stays 0.6
+# 0.36-0.80 and lift Fz toward the feasibility test's 0.4 (0.33 at 20 mm). `indep` stays 0.6
 # (DESIGN §11.2 wants it no lower); more and wider patches raise the O1-O2 correlation instead.
 _ALPHA_N_PATCHES = 10  # was 4
 _ALPHA_WIDTH_MM = 25.0  # was 10
