@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pytest
 
 from open_eeg_synth.channels import (
