@@ -56,7 +56,12 @@ class BrainLayer:
         case_seed: int,
         condition: str,
         rows: Sequence[int] | None = None,
+        f0_offsets_hz: dict[str, Sequence[float]] | None = None,
+        lags_ms: dict[str, Sequence[float]] | None = None,
     ) -> None:
+        """``f0_offsets_hz``/``lags_ms`` are the subject's per-patch values by rhythm name
+        (``make_subject``); a rhythm missing from them draws its own from its seed."""
+        f0_offsets_hz, lags_ms = f0_offsets_hz or {}, lags_ms or {}
         self.rows = None if rows is None else list(rows)
         self.parts: list = [
             Background(
@@ -85,6 +90,8 @@ class BrainLayer:
                     placements[r.name],
                     f0_hz[r.name],
                     stream_seed(case_seed, f"{condition}:rhythm:{r.name}"),
+                    f0_offsets_hz=f0_offsets_hz.get(r.name),
+                    lags_ms=lags_ms.get(r.name),
                 )
             )
 

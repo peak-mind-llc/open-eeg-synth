@@ -36,6 +36,45 @@ def test_region_centres_posterior_mirrored():
     assert all(head.source_pos[i, 1] < -0.04 for i in c)
 
 
+def test_supplied_offsets_and_lags_are_used_and_fallback_draws_from_seed():
+    head = load_head_model()
+    tl = StateTimeline.constant("eyes_closed")
+    spec = RhythmSpec("smr", 13.5, 6.0, sites=("C3", "C4", "Cz"), lag_ms=20.0)
+    centres = placed_centres(head, spec.sites, stream_rng(1, "subject:rhythm:smr"))
+    given = Rhythm(
+        head,
+        FS,
+        spec,
+        tl,
+        centres,
+        13.5,
+        stream_seed(1, "t"),
+        f0_offsets_hz=(0.1, -0.2, 0.3),
+        lags_ms=(0.0, 10.0, 20.0),
+    )
+    assert [o.f0 for o in given.own] == pytest.approx([13.6, 13.3, 13.8])
+    assert given.lags == [0, int(round(0.010 * FS)), int(round(0.020 * FS))]
+    a = Rhythm(head, FS, spec, tl, centres, 13.5, stream_seed(1, "t"))
+    b = Rhythm(head, FS, spec, tl, centres, 13.5, stream_seed(1, "t"))
+    assert a.lags == b.lags and a.f0_offsets_hz == b.f0_offsets_hz
+    assert all(0.0 <= v <= 20.0 for v in a.lags_ms)
+    # supplying the subject values does not reshuffle the time-course draws
+    c = Rhythm(
+        head,
+        FS,
+        spec,
+        tl,
+        centres,
+        13.5,
+        stream_seed(1, "t"),
+        f0_offsets_hz=a.f0_offsets_hz,
+        lags_ms=a.lags_ms,
+    )
+    assert np.array_equal(a.render(0, 1000), c.render(0, 1000))
+    with pytest.raises(ValueError):
+        Rhythm(head, FS, spec, tl, centres, 13.5, stream_seed(1, "t"), lags_ms=(1.0,))
+
+
 def test_rhythm_peaks_at_f0_on_targets_and_is_chunk_invariant():
     head = load_head_model()
     spec = RhythmSpec("smr", f0_hz=13.5, amp_uv=6.0, sites=("C3", "C4", "Cz"))

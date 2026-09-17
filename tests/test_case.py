@@ -17,6 +17,7 @@ from open_eeg_synth.case import (
     SensorSpec,
     case_id_for,
     make_case,
+    make_engine,
     make_subject,
 )
 from open_eeg_synth.channels import CHANNELS_19
@@ -223,3 +224,32 @@ def test_infinite_durations_survive_strict_json():
     assert back == spec and back.digest() == spec.digest()
     assert back.conditions[0].duration_s == math.inf
     assert back.conditions[0].timeline.segments[0].t1_s == math.inf
+
+
+def test_patch_offsets_and_lags_are_subject_properties():
+    """Per-patch centre-frequency offsets and lags belong to the subject (DESIGN §8.1
+    subject:rhythm:<name>): identical in every condition, seed-dependent, recorded."""
+    spec = resting_case(5, duration_s=1.0, artifacts=())
+    subj = make_subject(spec)
+    engines = [make_engine(spec, subj, c) for c in spec.conditions]
+    for r in spec.brain.rhythms:
+        ec, eo = (
+            next(p for p in e.layers[0].parts if p.name == f"brain.rhythm:{r.name}")
+            for e in engines
+        )
+        assert ec.lags == eo.lags and [o.f0 for o in ec.own] == [o.f0 for o in eo.own]
+        assert list(ec.f0_offsets_hz) == subj.patch_f0_offsets_hz[r.name]
+        assert list(ec.lags_ms) == subj.patch_lags_ms[r.name]
+        assert len(subj.patch_lags_ms[r.name]) == len(subj.placements[r.name])
+        assert all(0.0 <= lag <= r.lag_ms for lag in subj.patch_lags_ms[r.name])
+    alpha = subj.patch_f0_offsets_hz["alpha"]
+    assert len(set(alpha)) == len(alpha) and max(abs(v) for v in alpha) > 0.05
+    again = make_subject(spec)
+    assert again.patch_f0_offsets_hz == subj.patch_f0_offsets_hz
+    assert again.patch_lags_ms == subj.patch_lags_ms
+    other = make_subject(resting_case(6, duration_s=1.0, artifacts=()))
+    assert other.patch_f0_offsets_hz["alpha"] != alpha
+    d = subj.to_dict()
+    assert d["patch_f0_offsets_hz"] == subj.patch_f0_offsets_hz
+    assert d["patch_lags_ms"] == subj.patch_lags_ms
+    json.dumps(d, allow_nan=False)

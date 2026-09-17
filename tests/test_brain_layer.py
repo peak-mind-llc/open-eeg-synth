@@ -5,7 +5,7 @@ import numpy as np
 from open_eeg_synth.brain.layer import BrainLayer, BrainSpec
 from open_eeg_synth.brain.network import wire_network
 from open_eeg_synth.brain.placement import placed_centres, region_centres
-from open_eeg_synth.brain.rhythm import Rhythm
+from open_eeg_synth.brain.rhythm import Rhythm, draw_patch_params
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.headmodel import load_head_model
@@ -17,10 +17,11 @@ FS = 256.0
 
 
 def _build(spec: BrainSpec, timeline, seed=1):
+    """The brain layer as make_subject/make_engine build it, on the nominal head."""
     head = load_head_model()
     mixing = head.smoothed_mixing(spec.background.smoothing_mm)
     wiring = wire_network(head, spec.network, FS, stream_rng(seed, "subject:network"))
-    placements, f0 = {}, {}
+    placements, f0, offsets, lags = {}, {}, {}, {}
     for r in spec.rhythms:
         rng = stream_rng(seed, f"subject:rhythm:{r.name}")
         placements[r.name] = (
@@ -29,6 +30,7 @@ def _build(spec: BrainSpec, timeline, seed=1):
             else placed_centres(head, r.sites, rng)
         )
         f0[r.name] = r.f0_hz + (float(rng.normal(0, r.f0_jitter_hz)) if r.f0_jitter_hz else 0.0)
+        offsets[r.name], lags[r.name] = draw_patch_params(r, len(placements[r.name]), rng)
 
     def make():
         return BrainLayer(
@@ -43,6 +45,8 @@ def _build(spec: BrainSpec, timeline, seed=1):
             f0,
             seed,
             "eyes_closed",
+            f0_offsets_hz=offsets,
+            lags_ms=lags,
         )
 
     return make
@@ -111,7 +115,8 @@ def test_eyes_open_collapses_alpha():
 def test_brain_layer_part_matches_standalone_rhythm_stream():
     """A BrainLayer's alpha part must be seeded exactly like a standalone Rhythm built
     from the DESIGN §8.1 stream ``<condition>:rhythm:alpha`` (fix round 1, item 3d, P17;
-    mutation M5 points the rhythm stream at the background stream instead)."""
+    mutation M5 points the rhythm stream at the background stream instead), with its
+    per-patch offsets and lags drawn from ``subject:rhythm:alpha``."""
     head = load_head_model()
     spec = resting_brain()
     tl = StateTimeline.constant("eyes_closed")
@@ -126,9 +131,20 @@ def test_brain_layer_part_matches_standalone_rhythm_stream():
     rng = stream_rng(seed, "subject:rhythm:alpha")
     centres = region_centres(head, alpha_spec.region, alpha_spec.n_patches, rng)
     f0 = alpha_spec.f0_hz + float(rng.normal(0, alpha_spec.f0_jitter_hz))
+    # per-patch offsets and lags are subject draws, continuing subject:rhythm:alpha (DESIGN §8.1)
+    offsets, lags = draw_patch_params(alpha_spec, len(centres), rng)
     standalone = Rhythm(
-        head, FS, alpha_spec, tl, centres, f0, stream_seed(seed, "eyes_closed:rhythm:alpha")
+        head,
+        FS,
+        alpha_spec,
+        tl,
+        centres,
+        f0,
+        stream_seed(seed, "eyes_closed:rhythm:alpha"),
+        f0_offsets_hz=offsets,
+        lags_ms=lags,
     )
+    assert part.f0_offsets_hz == offsets and part.lags_ms == lags
 
     n = int(5 * FS)
     assert np.array_equal(part.render(0, n), standalone.render(0, n))

@@ -14,7 +14,7 @@ from open_eeg_synth._canon import canonical_fields, inf_from_json, inf_to_json, 
 from open_eeg_synth.brain.layer import BrainLayer, BrainSpec
 from open_eeg_synth.brain.network import NetworkWiring, wire_network
 from open_eeg_synth.brain.placement import placed_centres, region_centres
-from open_eeg_synth.brain.rhythm import RhythmSpec
+from open_eeg_synth.brain.rhythm import RhythmSpec, draw_patch_params
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.engine import Engine, Recording
@@ -159,12 +159,17 @@ class Subject:
     network: NetworkWiring
     pattern_jitter: dict[str, float]
     rows: list[int]  # rows of ``head`` that the case records, in CaseSpec.channels order
+    # per rhythm, per patch: own centre-frequency offset (Hz) and driver lag (ms), DESIGN §4.3
+    patch_f0_offsets_hz: dict[str, list[float]] = field(default_factory=dict)
+    patch_lags_ms: dict[str, list[float]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
             "head_perturbation": self.head.perturbation,
             "placements": self.placements,
             "f0_hz": self.f0_hz,
+            "patch_f0_offsets_hz": self.patch_f0_offsets_hz,
+            "patch_lags_ms": self.patch_lags_ms,
             "network": self.network.to_dict(),
             "pattern_jitter": self.pattern_jitter,
         }
@@ -185,6 +190,8 @@ def make_subject(spec: CaseSpec) -> Subject:
     mixing = head.smoothed_mixing(spec.brain.background.smoothing_mm)
     placements: dict[str, list[int]] = {}
     f0: dict[str, float] = {}
+    offsets: dict[str, list[float]] = {}
+    lags: dict[str, list[float]] = {}
     for r in compiled_rhythms(spec):
         rng = stream_rng(spec.seed, f"subject:rhythm:{r.name}")
         placements[r.name] = (
@@ -193,6 +200,8 @@ def make_subject(spec: CaseSpec) -> Subject:
             else placed_centres(head, r.sites, rng)
         )
         f0[r.name] = r.f0_hz + (float(rng.normal(0.0, r.f0_jitter_hz)) if r.f0_jitter_hz else 0.0)
+        off, lag = draw_patch_params(r, len(placements[r.name]), rng)
+        offsets[r.name], lags[r.name] = list(off), list(lag)
     wiring = wire_network(
         head, spec.brain.network, spec.fs, stream_rng(spec.seed, "subject:network")
     )
@@ -200,7 +209,7 @@ def make_subject(spec: CaseSpec) -> Subject:
         k: float(stream_rng(spec.seed, f"subject:artifact:{k}").normal(0.0, 0.6))
         for k in sorted({a.kind for a in spec.artifacts})
     }
-    return Subject(head, mixing, placements, f0, wiring, jitter, rows)
+    return Subject(head, mixing, placements, f0, wiring, jitter, rows, offsets, lags)
 
 
 def make_engine(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Engine:
@@ -223,6 +232,8 @@ def make_engine(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> E
             seed,
             condition.name,
             rows=subject.rows,
+            f0_offsets_hz=subject.patch_f0_offsets_hz,
+            lags_ms=subject.patch_lags_ms,
         )
     ]
     transforms: list = []
