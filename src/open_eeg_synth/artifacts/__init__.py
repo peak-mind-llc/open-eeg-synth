@@ -6,6 +6,7 @@ from __future__ import annotations
 from open_eeg_synth.artifacts import (
     blink,  # noqa: F401
     eye_movement,  # noqa: F401
+    jaw_emg,  # noqa: F401
 )
 from open_eeg_synth.artifacts.base import (  # noqa: F401
     Event,
