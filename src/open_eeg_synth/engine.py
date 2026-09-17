@@ -78,6 +78,8 @@ class Engine:
         self.fs = float(fs)
         self.layers = list(layers)
         self.transforms = list(transforms)
+        if not self.layers:
+            raise ValueError("Engine requires at least one layer")
         names = [lay.name for lay in self.layers] + [t.name for t in self.transforms]
         if len(set(names)) != len(names):
             raise ValueError(f"duplicate layer names: {names}")
@@ -96,13 +98,26 @@ class Engine:
         out: dict[str, np.ndarray] = {}
         mix = np.zeros((n_ch, n), dtype=np.float32)
         for lay in self.layers:
-            block = np.asarray(lay.render(t0, n), dtype=np.float32)
+            # np.array(..., copy the default True) — never np.asarray — so a layer that reuses its
+            # own scratch buffer across calls cannot corrupt a block already stored in this Frame or
+            # in an earlier one accumulated by render_all.
+            block = np.array(lay.render(t0, n), dtype=np.float32)
             if block.shape != (n_ch, n):
                 raise ValueError(f"layer {lay.name} returned {block.shape}, expected {(n_ch, n)}")
             out[lay.name] = block
             mix += block
         for tr in self.transforms:
-            delta = np.asarray(tr.render_transform(t0, n, mix), dtype=np.float32)
+            # Transforms see the running mix read-only (they may inspect other channels, e.g. a
+            # dead channel), but not mutate it; the delta is copied for the same reuse reason as
+            # above, which also covers a transform returning a view of mix itself (`return mix`) —
+            # uncopied, that view would keep changing as later transforms add to mix.
+            view = mix.view()
+            view.flags.writeable = False
+            delta = np.array(tr.render_transform(t0, n, view), dtype=np.float32)
+            if delta.shape != (n_ch, n):
+                raise ValueError(
+                    f"transform {tr.name} returned {delta.shape}, expected {(n_ch, n)}"
+                )
             out[tr.name] = delta
             mix += delta
         self._pos += n
