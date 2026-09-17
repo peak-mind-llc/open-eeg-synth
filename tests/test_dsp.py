@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 
 from open_eeg_synth.dsp import OU, PinkCascade, lowpass_decimate, raised_cosine_envelope
