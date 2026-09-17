@@ -928,13 +928,14 @@ consumer code):
   power at O1, Fz, Cz; per-channel RMS after 1–45 Hz filtering and average reference.
 - Preparation: 1–45 Hz band-pass, `standard_1020` montage, average reference, 4 s epochs, epochs with
   peak-to-peak > 800 µV dropped, at least 8 epochs.
-- Method, exactly as the feasibility test ran it: `spectral_connectivity_epochs(epochs,
-  method=["wpli2_debiased", "coh"], fmin=[1, 4, 8, 13], fmax=[4, 8, 13, 30], faverage=True)` on the 4 s
-  fixed-length epochs, dense output read as `(M + Mᵀ)/2` over the upper triangle. mne-connectivity fills
-  one triangle, so every coherence and dwPLI figure in this section is one half of the magnitude coherence
-  / debiased wPLI — the same reading the consuming application's electrode-connectivity code makes. The
-  reference file and the synthetic side share this convention (the rebuilt reference reproduces the
-  feasibility test's percentiles to 0.002); do not square or re-read the triangle on one side only.
+- Method: `spectral_connectivity_epochs(epochs, method=["wpli2_debiased", "coh"], fmin=[1, 4, 8, 13],
+  fmax=[4, 8, 13, 30], faverage=True)` on the 4 s fixed-length epochs, pair values read as they are from
+  the lower triangle of the dense output (mne-connectivity fills that triangle and leaves the other zero).
+  The feasibility test measured through a consumer function that averaged the dense matrix with its
+  transpose and so halved every pair value; the package does not reproduce that defect. Every coherence
+  and dwPLI figure in this section, and every value in the reference file, is the true magnitude
+  coherence / debiased wPLI — twice the figure the feasibility test reported. Synthetic and real
+  recordings are measured identically, so relative comparisons are unchanged.
 
 **Reference**: PhysioNet eegmmidb subjects 1–20, runs 1 (eyes open) and 2 (eyes closed), blink
 components removed by ICA (fastica, 15 components, `find_bads_eog` on Fp1/Fp2 at threshold 3).
@@ -947,30 +948,32 @@ regenerating the reference does.
 (without ICA), medians compared with the reference bands.
 
 **Pass bands** (10th–90th percentile of the 20 real subjects; the feasibility test's tuned model in
-parentheses for eyes closed / eyes open):
+parentheses for eyes closed / eyes open; true pair values, i.e. twice the feasibility test's halved
+figures — the rebuilt reference reproduces 2 × those to 0.003):
 
 | reference / band | mean coherence EC | EO | dwPLI EC | EO |
 |---|---|---|---|---|
-| average / Delta | 0.13–0.21 (0.17) | 0.12–0.37 (0.17) | 0.005–0.067 (0.006) | 0.004–0.264 (0.006) |
-| average / Theta | 0.16–0.20 (0.18) | 0.15–0.28 (0.17) | 0.026–0.102 (0.035) | 0.041–0.107 (0.029) |
-| average / Alpha | 0.18–0.29 (0.26) | 0.15–0.23 (0.19) | 0.067–0.191 (0.125) | 0.029–0.128 (0.052) |
-| average / Beta | 0.15–0.20 (0.17) | 0.13–0.19 (0.18) | 0.060–0.120 (0.062) | 0.049–0.117 (0.063) |
-| bipolar / Delta | 0.09–0.17 (0.11) | 0.09–0.26 (0.11) | 0.004–0.040 (0.006) | 0.001–0.185 (0.005) |
-| bipolar / Theta | 0.11–0.15 (0.12) | 0.10–0.19 (0.12) | 0.021–0.075 (0.026) | 0.026–0.108 (0.024) |
-| bipolar / Alpha | 0.14–0.24 (0.20) | 0.11–0.16 (0.14) | 0.072–0.174 (0.090) | 0.020–0.129 (0.038) |
-| bipolar / Beta | 0.11–0.14 (0.12) | 0.10–0.14 (0.12) | 0.063–0.121 (0.057) | 0.032–0.130 (0.059) |
-| laplacian / Delta | 0.11–0.14 (0.13) | 0.11–0.22 (0.13) | 0.003–0.046 (0.007) | 0.000–0.243 (0.005) |
-| laplacian / Theta | 0.11–0.14 (**0.155**) | 0.12–0.16 (0.15) | 0.023–0.079 (0.046) | 0.017–0.162 (0.042) |
-| laplacian / Alpha | 0.13–0.19 (**0.223**) | 0.12–0.16 (0.16) | 0.072–0.193 (0.079) | 0.031–0.135 (0.036) |
-| laplacian / Beta | 0.14–0.17 (0.16) | 0.13–0.18 (0.17) | 0.070–0.133 (0.087) | 0.035–0.133 (0.090) |
+| average / Delta | 0.26–0.42 (0.34) | 0.24–0.74 (0.34) | 0.010–0.134 (0.012) | 0.008–0.528 (0.012) |
+| average / Theta | 0.32–0.40 (0.36) | 0.30–0.56 (0.34) | 0.052–0.204 (0.070) | 0.082–0.214 (0.058) |
+| average / Alpha | 0.36–0.58 (0.52) | 0.30–0.46 (0.38) | 0.134–0.382 (0.250) | 0.058–0.256 (0.104) |
+| average / Beta | 0.30–0.40 (0.34) | 0.26–0.38 (0.36) | 0.120–0.240 (0.124) | 0.098–0.234 (0.126) |
+| bipolar / Delta | 0.18–0.34 (0.22) | 0.18–0.52 (0.22) | 0.008–0.080 (0.012) | 0.002–0.370 (0.010) |
+| bipolar / Theta | 0.22–0.30 (0.24) | 0.20–0.38 (0.24) | 0.042–0.150 (0.052) | 0.052–0.216 (0.048) |
+| bipolar / Alpha | 0.28–0.48 (0.40) | 0.22–0.32 (0.28) | 0.144–0.348 (0.180) | 0.040–0.258 (0.076) |
+| bipolar / Beta | 0.22–0.28 (0.24) | 0.20–0.28 (0.24) | 0.126–0.242 (0.114) | 0.064–0.260 (0.118) |
+| laplacian / Delta | 0.22–0.28 (0.26) | 0.22–0.44 (0.26) | 0.006–0.092 (0.014) | 0.000–0.486 (0.010) |
+| laplacian / Theta | 0.22–0.28 (**0.31**) | 0.24–0.32 (0.30) | 0.046–0.158 (0.092) | 0.034–0.324 (0.084) |
+| laplacian / Alpha | 0.26–0.38 (**0.45**) | 0.24–0.32 (0.32) | 0.144–0.386 (0.158) | 0.062–0.270 (0.072) |
+| laplacian / Beta | 0.28–0.34 (0.32) | 0.26–0.36 (0.34) | 0.140–0.266 (0.174) | 0.070–0.266 (0.180) |
 
 Other metrics: aperiodic exponent 0.8–1.4 (real p10–p90 0.62–1.37 EC, 0.43–1.39 EO; tuned 1.25 / 1.20);
 alpha share at O1 0.35–0.79 EC (tuned 0.64) and 0.05–0.30 EO (0.21); RMS at Cz 8–20 µV (real medians
 13.7 / 12.7; tuned 11.9 / 11.7). Coherence-by-distance bins: inside the real p10–p90 per bin with a
-±0.03 allowance (the six-seed median is noisier than a twenty-subject one).
+±0.06 allowance (the six-seed median is noisier than a twenty-subject one; the allowance is twice the
+feasibility test's ±0.03 because the values are).
 
 Acceptance for v0.2.0: every average and bipolar metric inside its band; every Laplacian metric inside
-`[p10 − 0.02, p90 + 0.04]`. The two bold values are the feasibility test's known gap (Laplacian alpha and
+`[p10 − 0.04, p90 + 0.08]` (twice the feasibility test's `[−0.02, +0.04]`, for the same reason). The two bold values are the feasibility test's known gap (Laplacian alpha and
 theta slightly too coherent at long distance); M2 tries to close it (§11) and the tolerance is
 tightened when it does.
 

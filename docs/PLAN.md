@@ -5326,7 +5326,7 @@ and call `_mock_engine(...)` in the three loops. `next_chunk(n)` and `due_marker
 
 **Interfaces:**
 - Consumes: `mne`, `mne_connectivity` (skip if absent).
-- Produces: `BANDS`, `DIST_EDGES`, `CHAINS`, `to_raw(x_uv, fs, channels)`, `prep(raw, remove_blinks=False)`, `bipolar(raw)`, `laplacian(raw)`, `measure(raw, remove_blinks=False) -> dict` with keys `n_epochs`, `<ref>/<Band>/coh_mean`, `<ref>/<Band>/dwpli_mean`, `<ref>/<Band>/coh_by_dist` (5 values), `aperiodic_exponent`, `alpha_share/O1|Fz|Cz`, `rms_uv/<ch>`. The method is the feasibility test's, exactly: `spectral_connectivity_epochs(method=["wpli2_debiased", "coh"], fmin=…, fmax=…, faverage=True)` on 4 s fixed-length epochs after 1–45 Hz, `standard_1020`, average reference; the dense output is read as `(M + Mᵀ)/2` over the upper triangle. mne-connectivity fills only the lower triangle, so every coherence and dwPLI value is one half of the magnitude coherence / dwPLI — the convention of DESIGN §9.1, of the reference file and of the consuming application's electrode-connectivity code. Do not "fix" this by squaring or by reading the lower triangle: the reference and the synthetic side must share one convention, and Task 31 cross-checks it.
+- Produces: `BANDS`, `DIST_EDGES`, `CHAINS`, `to_raw(x_uv, fs, channels)`, `prep(raw, remove_blinks=False)`, `bipolar(raw)`, `laplacian(raw)`, `measure(raw, remove_blinks=False) -> dict` with keys `n_epochs`, `<ref>/<Band>/coh_mean`, `<ref>/<Band>/dwpli_mean`, `<ref>/<Band>/coh_by_dist` (5 values), `aperiodic_exponent`, `alpha_share/O1|Fz|Cz`, `rms_uv/<ch>`. The method is the feasibility test's — `spectral_connectivity_epochs(method=["wpli2_debiased", "coh"], fmin=…, fmax=…, faverage=True)` on 4 s fixed-length epochs after 1–45 Hz, `standard_1020`, average reference — except that the pair values are read as they are from the lower triangle of the dense output (mne-connectivity fills that triangle and leaves the other zero). The feasibility test measured through a consumer function that averaged the matrix with its transpose and so halved every pair value; the package does not copy that defect. Every coherence and dwPLI number in DESIGN §9.1, in the reference file and in Task 31's expectations is the true value, twice the feasibility test's figure; Task 31 cross-checks exactly that.
 
 - [ ] **Step 1: Write the smoke test**
 
@@ -5450,15 +5450,14 @@ def measure(raw: mne.io.Raw, remove_blinks: bool = False) -> dict:
         coh = con[1].get_data(output="dense")
         pos = _pair_positions(names)
         dist = np.linalg.norm(pos[:, None] - pos[None], axis=2) * 1000.0
-        # The feasibility test (and the consuming application's electrode-connectivity code) read
-        # the dense output as (M + M.T) / 2 over the upper triangle. mne-connectivity fills only the
-        # lower triangle, so every value is HALF the magnitude coherence / dwPLI. Reproduced exactly:
-        # the reference file, DESIGN §9.1 and the synthetic side all share this one convention.
-        iu = np.triu_indices(len(names), 1)
-        bins = np.digitize(dist[iu], DIST_EDGES) - 1
+        # True pair values: mne-connectivity fills the lower triangle of the dense output and leaves
+        # the upper one zero, so the pair values are read from the lower triangle as they are. (The
+        # feasibility test measured through a consumer function that averaged M with M.T and so
+        # halved every value; the numbers in DESIGN §9.1 and the reference file are the true ones.)
+        il = np.tril_indices(len(names), -1)
+        bins = np.digitize(dist[il], DIST_EDGES) - 1
         for bi, band in enumerate(BANDS):
-            c = (0.5 * (coh[..., bi] + coh[..., bi].T))[iu]
-            w = (0.5 * (dw[..., bi] + dw[..., bi].T))[iu]
+            c, w = coh[..., bi][il], dw[..., bi][il]
             res[f"{ref}/{band}/coh_by_dist"] = [float(c[bins == k].mean()) if np.any(bins == k) else None
                                                 for k in range(len(DIST_EDGES) - 1)]
             res[f"{ref}/{band}/coh_mean"] = float(c.mean())
@@ -5476,7 +5475,7 @@ def measure(raw: mne.io.Raw, remove_blinks: bool = False) -> dict:
     return res
 ```
 
-The symmetrise-then-upper-triangle reading is insensitive to which triangle the installed mne-connectivity fills, as long as it fills exactly one; Task 31's cross-check against the feasibility test's percentiles (agreement to 0.002) is the guard.
+If `get_data(output="dense")` fills the upper triangle in the installed mne-connectivity (0.9 fills the lower), swap `tril_indices(-1)` for `triu_indices(1)`; the smoke test's `coh_mean` in `[0, 1]` catches a wrong choice (zeros drag it to ~0), and Task 31's cross-check (twice the feasibility test's percentiles, to 0.005) is the guard against any averaging that halves the values.
 
 - [ ] **Step 3: Run**
 
@@ -5587,7 +5586,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it and eyeball the numbers**
 
 Run: `python scripts/build_realism_reference.py --subjects 20`
-Expected: 20 usable subjects per condition; `groups.eyes_closed["average/Alpha/coh_mean"]` = `{p10 0.182, p50 0.248, p90 0.285}`, `average/Alpha/dwpli_mean` = `{0.067, 0.092, 0.191}`, `aperiodic_exponent` p50 1.196, `rms_uv/Cz` p50 13.7 (DESIGN §9.1; the module reproduced the feasibility test's percentiles to 0.002 on every coherence, dwPLI, exponent and alpha-share entry). If any coherence or dwPLI percentile differs by more than 0.02, the measurement module differs from the feasibility test's — a factor of two means the `(M + Mᵀ)/2` reading in Task 30 was changed; otherwise check the ICA blink removal and the epoching.
+Expected: 20 usable subjects per condition; `groups.eyes_closed["average/Alpha/coh_mean"]` = `{p10 0.365, p50 0.497, p90 0.570}`, `average/Alpha/dwpli_mean` = `{0.134, 0.185, 0.383}`, `aperiodic_exponent` p50 1.196, `rms_uv/Cz` p50 13.7 (DESIGN §9.1). Cross-check: every coherence, dwPLI and coherence-by-distance percentile must equal **2 × the feasibility test's** (`results_real.json` in the session scratchpad) within 0.005, and every exponent / alpha-share percentile must equal 1 × it within 0.005 — the rebuilt file agreed to 0.003 and 0.002 respectively. A factor-of-two shortfall means an averaging with the transpose crept back into Task 30; anything else, check the ICA blink removal and the epoching.
 
 - [ ] **Step 3: Commit**
 
@@ -5624,8 +5623,8 @@ from open_eeg_synth.recipes import resting_case  # noqa: E402
 from tests.realism.measure import BANDS, measure, to_raw  # noqa: E402
 
 REF = json.loads((Path(__file__).parent / "reference" / "eegmmidb_baselines_s01-20.json").read_text())
-TOL = {"average": (0.0, 0.0), "bipolar": (0.0, 0.0), "laplacian": (-0.02, 0.04)}  # DESIGN §9.1
-BIN_TOL = 0.03
+TOL = {"average": (0.0, 0.0), "bipolar": (0.0, 0.0), "laplacian": (-0.04, 0.08)}  # DESIGN §9.1
+BIN_TOL = 0.06  # true pair values (twice the feasibility test's), so twice its +/-0.03 allowance
 N_SEEDS, DUR_S = 6, 60.0
 
 
@@ -5673,7 +5672,7 @@ def test_resting_recipe_matches_public_reference(cond):
 - [ ] **Step 2: Run it**
 
 Run: `pytest -m realism tests/realism/test_realism.py -v` (2–4 min)
-Expected: with the calibrated recipe, the average and bipolar coherence rows pass; the Laplacian alpha/theta rows may fail by a few hundredths (the known gap, DESIGN §11.2). For orientation, the recipe *before* Task 12's calibration fails about seven lines per condition: dwPLI two to three times too low under every reference (e.g. average/Alpha 0.032 against a 0.067–0.191 band), the nearest-distance coherence bin too high under bipolar and Laplacian, and the O1 alpha share 0.33 eyes closed. dwPLI comes from the delayed network and the rhythms' inter-patch lags (DESIGN §4.2, §4.3), so if it is still low after calibration the knobs are `NetworkSpec.coupling` (1.0 → 1.5), `network_frac`, and the rhythms' `lag_ms`.
+Expected: with the calibrated recipe, the average and bipolar coherence rows pass; the Laplacian alpha/theta rows may fail by a few hundredths (the known gap, DESIGN §11.2). For orientation, the recipe *before* Task 12's calibration fails 7 lines eyes closed and 7 eyes open: dwPLI two to three times too low under every reference (e.g. average/Alpha 0.063 against a 0.134–0.383 band), the nearest-distance coherence bin too high under bipolar and Laplacian, and the O1 alpha share 0.33 eyes closed. dwPLI comes from the delayed network and the rhythms' inter-patch lags (DESIGN §4.2, §4.3), so if it is still low after calibration the knobs are `NetworkSpec.coupling` (1.0 → 1.5), `network_frac`, and the rhythms' `lag_ms`.
 
 - [ ] **Step 3: Tune, at most two hours.** In this order, one change at a time, rerunning the test after each: (a) alpha `indep` 0.6 → 0.75; (b) alpha `n_patches` 4 → 6; (c) network `width_mm` 15 → 12; (d) background `smoothing_mm` 20 → 17. Keep a change only if it reduces the number of failing lines without breaking the average/bipolar rows or the fast tests (`pytest -q`, especially `tests/test_brain_layer.py` and the Task 12 calibration). Stop when the test passes or the two hours are up; in the latter case leave the failing Laplacian lines documented in the README's "Known gaps" section (Task 35) and widen `TOL["laplacian"]` to the smallest value that passes, noting the value in the commit message.
 
@@ -5845,7 +5844,8 @@ Pre-flight rulings P1–P18 (see `.superpowers/sdd/PLAN/progress.md`) plus two c
 - P1 → Task 1: `_version.py` is renamed to `version.py` (`git mv`), `SIGNAL_VERSION` added, `[tool.hatch.version] path` and the `__init__` import updated; Step 1 no longer says "confirm `version.py` exists".
 - P2 → Task 9: `StateTimeline` is a frozen dataclass (`segments`, `ramp_s`) with value equality; its round-trip test now asserts `back == tl`. (Tasks 12, 20, 23 round-trip tests unchanged and now pass.)
 - P3 → Tasks 4, 11, 12, 28: `make_subject` places patches on the full head and records `rows`; `BrainLayer(…, rows=)` renders the full head and returns the recorded rows; `make_engine` subsets only for artifacts and the sensor layer; `HeadModel.perturbed` skips the scalp blur for one channel (draw still consumed) and Task 4 gains a one-channel test; Task 28's interface says any label set works.
-- P4 → Tasks 30, 31, 32: `measure.py` reads the dense connectivity as `(M + Mᵀ)/2` over the upper triangle (the feasibility test's exact reading; half the magnitude coherence / dwPLI because mne-connectivity fills one triangle); Task 31's expected percentiles are the feasibility test's to three decimals; Task 32 states what the uncalibrated recipe scores and which knobs move dwPLI.
+- P4 → Tasks 30, 31, 32 (superseded by P4b for the halving): `measure.py` uses the feasibility test's method (`spectral_connectivity_epochs(method=["wpli2_debiased", "coh"], faverage=True)`, 4 s epochs, 1–45 Hz, `standard_1020`, average reference); Task 32 states what the uncalibrated recipe scores and which knobs move dwPLI.
+- P4b → Tasks 30, 31, 32 and DESIGN §9.1: the feasibility test's coherence/dwPLI figures were halved by a consumer-side `(M + Mᵀ)/2` on mne-connectivity's one-triangle output; `measure.py` reads the true pair values from the lower triangle (no averaging with the transpose), the committed reference and every stated band, median and tuned-model figure are the true values (twice the feasibility test's), the Laplacian and per-bin allowances double with them (`[p10 − 0.04, p90 + 0.08]`, ±0.06), and Task 31's cross-check is "2 × `results_real.json` within 0.005" (rebuilt: 0.003; non-connectivity metrics 1 × within 0.002). Re-run in scratch: smoke test passes; the uncalibrated realism test fails 7 + 7 lines (dwPLI ~0.06 against 0.13–0.38), as Task 32 now states.
 - P5 → Task 5: `welch` shortens `nperseg` to the input length, so `band_power` works on per-second windows (Task 18's burst test no longer crashes).
 - P6 → Tasks 16, 15: `Blink.waveform` normalised to unit peak on the sampled grid; the blink test's posterior factor is 4 (one bound, `|O1| < 0.25`, in both tasks).
 - P7 → Task 15: heog time-course threshold 0.4 (25 of 30 subjects clear it; 0.2 kept 4 of 20); download failure stops at the subjects on disk; subjects 1–30 stay the default (21–30 downloaded in about a minute here); the file test asserts `n_subjects >= 15` and `heog_sd.max() < HEOG_SD_MAX` with `HEOG_SD_MAX = 0.45` — the ruled 0.35 cannot be met: the derived map's spread is 0.40 over 17 subjects and 0.42 over 30, so 0.35 would fail regardless of subject count (DESIGN §6.3 now states 0.45 for heog, 0.35 for blink).
