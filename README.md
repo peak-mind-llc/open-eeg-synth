@@ -75,9 +75,9 @@ a 2.5 Hz rhythm of about 45 uV from one cortical patch under F7, present through
 ['artifact:blink', 'artifact:emg', 'artifact:eye_movement', 'brain', 'sensor']
 ```
 
-Rebuild layers with the package version that made the case: `render_layers` warns when the versions
-differ, and raises `LayerMismatchError` if the rebuilt layers do not match the RMS values stored in
-the truth file.
+Rebuild layers with a package version of the same `SIGNAL_VERSION` as the one that made the case:
+`render_layers` warns when the signal versions differ, and raises `LayerMismatchError` if the rebuilt
+layers do not match the RMS values stored in the truth file.
 
 Stream chunks, for example from a mock amplifier:
 
@@ -221,7 +221,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules.
 
 `open_eeg_synth.__version__` is the package version. `open_eeg_synth.SIGNAL_VERSION` is an integer
 that changes whenever the same seed would produce different samples. Both are written into every
-truth file, and `render_layers` warns when a file was made by a different version. A fingerprint test
+truth file, and `render_layers` warns when a file was made under a different `SIGNAL_VERSION`. A fingerprint test
 fails if the samples change without a `SIGNAL_VERSION` bump. `SIGNAL_VERSION` 2 is the first released
 layered signal (v0.2.0).
 

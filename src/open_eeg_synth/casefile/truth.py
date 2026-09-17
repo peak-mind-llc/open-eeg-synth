@@ -88,11 +88,13 @@ def read_truth(path) -> dict:
 def render_layers(truth: dict, condition: str, *, rtol: float = 1e-3) -> Recording:
     """Rebuild one condition's layers from the sealed spec and check them against the recorded RMS.
 
-    Raises :class:`LayerMismatchError` when the re-rendered layer names differ from the truth
-    file's ``layers`` list, or when a layer's per-channel RMS drifts past ``rtol``.
+    Warns when the truth file was made under another ``SIGNAL_VERSION`` (the message names both
+    package versions). Raises :class:`LayerMismatchError` when the re-rendered layer names differ
+    from the truth file's ``layers`` list, or when a layer's per-channel RMS drifts past ``rtol``.
     """
     gen = truth["generator"]
-    if gen["version"] != version.__version__ or gen["signal_version"] != version.SIGNAL_VERSION:
+    # only a different SIGNAL_VERSION can change the samples; the message names both packages
+    if gen["signal_version"] != version.SIGNAL_VERSION:
         warnings.warn(
             f"truth made by open-eeg-synth {gen['version']} (signal {gen['signal_version']}); "
             f"this is {version.__version__} (signal {version.SIGNAL_VERSION})",

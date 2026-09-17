@@ -928,6 +928,33 @@ def test_pruning_keys_owners_by_identity_not_by_equality():
         ARTIFACTS.pop("test_dataclass_peer_hashable", None)
 
 
+def test_value_equal_plugins_are_separate_participants():
+    """The Occupancy registers exclusive participants by identity (DESIGN §5.2), so two
+    value-equal dataclass plug-ins both join, both schedule and never overlap, and rebinding one
+    elsewhere removes that one only."""
+    Peer = _dataclass_peer_cls({"kind": "test_dataclass_peer_equal"})
+    try:
+        tl = StateTimeline.constant("eyes_open")
+        occ, other = Occupancy(), Occupancy()
+        a, b = Peer(rate=2.0, length_s=0.3), Peer(rate=2.0, length_s=0.3)
+        assert a == b and a is not b
+        a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+        b.bind(_ctx(tl, seed=2, occupancy=occ, name="artifact:b"))
+        assert len(occ._exclusive) == 2
+        for t0 in range(0, 3000, 100):
+            a.render(t0, 100)
+            b.render(t0, 100)
+        assert a.truth() and b.truth()
+        spans = sorted(
+            (round(t.onset_s * FS), round(t.offset_s * FS)) for t in a.truth() + b.truth()
+        )
+        assert all(end <= nxt for (_, end), (nxt, _) in zip(spans, spans[1:], strict=False))
+        b.bind(_ctx(tl, seed=2, occupancy=other, name="artifact:b"))
+        assert len(occ._exclusive) == 1 and occ._exclusive[0] is a
+    finally:
+        ARTIFACTS.pop("test_dataclass_peer_equal", None)
+
+
 def test_same_occupancy_rebind_after_pruning_a_peers_span_is_refused():
     """A same-occupancy rebind resets the rebinding artifact's own scheduler to sample 0 and
     drops only its own spans (`bind`'s docstring) - it relies on every *other* participant's

@@ -758,9 +758,9 @@ watermark at its long-past last event and stall pruning for everyone. Pruning ne
 scheduling decision (tested against the same scenarios with pruning switched off), but it removes the
 history that a same-occupancy rebind relies on, so a rebind is refused with `ValueError` once any
 *other* participant's span has been pruned (a plug-in that only ever pruned its own spans still
-rebinds). The record of pruned participants is kept by identity, not equality, so two value-equal
-dataclass plug-ins cannot mask each other there (the list of registered participants still compares
-by equality; §11).
+rebinds). The `Occupancy` tells participants apart by identity, never by equality, both in its list of
+registered participants and in its record of pruned ones, so two value-equal dataclass plug-ins are
+two participants that both schedule and never overlap.
 
 None of the built-in plug-ins is exclusive, so a default case or stream never commits a span (a
 30-minute default stream ends with none). Two limits remain, neither reachable with the built-in
@@ -1173,6 +1173,7 @@ class SensorSpec: white_uv: float = 1.5
 
 @dataclass(frozen=True)
 class ArtifactSpec: kind: str; params: dict = field(default_factory=dict)   # params kept as JSON reads them back
+    def identity(self) -> dict           # params with every non-bool number as a float: equality, hash, digest
 
 @dataclass(frozen=True)
 class ConditionSpec:
@@ -1236,10 +1237,14 @@ accepted, and wrong types raise `TypeError` — a string for a number (`fs="256"
 also canonicalises its channels against the selected head model's own channel list
 (`head_model_channels`), so aliases and letter case give the same spec, digest and case id (`T7` and
 `t3` are both `T3`); it rejects channels that collapse to one name (`("T3", "t7")`) and duplicate
-condition names. A bare `CaseSpec(seed=s)` equals `recipes.resting_case(s)`, digest included. One
-gap remains: an `ArtifactSpec`'s `params` are kept exactly as JSON reads them back, not normalised, so
-`{"rms_median_uv": 50}` and `{"rms_median_uv": 50.0}` compare equal but give different digests and
-case ids (§11).
+condition names. A bare `CaseSpec(seed=s)` equals `recipes.resting_case(s)`, digest included. An
+`ArtifactSpec`'s `params` are the plug-in's constructor arguments and are kept exactly as JSON reads
+them back, so a plug-in receives what was given (the built-ins coerce their numbers themselves). The
+spec's identity reads them through `ArtifactSpec.identity()`, where every number that is not a bool is
+a float: equality, hash and `CaseSpec.digest` all use that form, so `{"rms_median_uv": 50}` and
+`{"rms_median_uv": 50.0}` (or a numpy scalar) are one spec with one case id, while `{"flag": True}`
+and `{"flag": 1}` stay two specs with two ids (a bool stays a bool). Specs whose artifact numbers were
+already floats keep their digests.
 `case_id_for(spec)` is `"synth-"` followed by the 8 hex characters of a 4-byte blake2b digest of
 `"<seed>:<spec digest>"`.
 
@@ -1410,8 +1415,9 @@ condition's bursts in `params["bursts_s"]` (§4.4).
 **Re-rendering the layers.** Layers are not embedded by default: they are re-rendered on demand by
 `casefile.writer.render_layers(truth_dict, condition, *, rtol=1e-3) -> Recording` (defined in
 `casefile.truth`), which rebuilds the subject from `spec` and renders the condition through
-`make_recording` (§7.2). If the package version or `SIGNAL_VERSION` differs from `generator`, it
-warns. It raises `ValueError` naming the condition when the spec has no such condition or the truth
+`make_recording` (§7.2). If the truth file's `SIGNAL_VERSION` differs from this package's, it warns,
+naming both package versions; another package version with the same `SIGNAL_VERSION` makes the same
+samples and does not warn. It raises `ValueError` naming the condition when the spec has no such condition or the truth
 file has no recording for it. It raises `LayerMismatchError` when the re-rendered layer names differ
 from the truth file's `layers` list, or when a layer's per-channel RMS differs from `layer_rms_uv`
 beyond `rtol` (with an absolute allowance of 1e-3 µV), so a consumer never grades against the wrong
@@ -1496,7 +1502,7 @@ eyes-closed recording with the values stored, rounded to 0.01 µV, in
 `SIGNAL_VERSION` stays the same, and passes without comparing when the version differs from the
 stored one. After a deliberate change, bump `SIGNAL_VERSION` and run `scripts/update_golden.py` in the
 same commit to regenerate the file. Both numbers are written into every truth file, and
-`render_layers` warns when either differs (§7.4). The `classic` subpackage keeps its own bit-exact
+`render_layers` warns when `SIGNAL_VERSION` differs (§7.4). The `classic` subpackage keeps its own bit-exact
 golden test against the recording application's original output (`tools/make_classic_golden.py`
 records that fixture).
 
@@ -1708,8 +1714,10 @@ addopts = "-ra -m 'not realism and not slow'"   # markers: realism, slow
   IIR filters with carried state and polyphase anti-alias decimation are exactly what `scipy.signal`
   does robustly, both consumers already ship scipy, and the call sites (`lfilter`, `firwin`,
   `resample_poly`) are isolated in `dsp.py`; the truth file also records scipy's version. The
-  `classic` subpackage's code uses only numpy, but importing it through the package also loads scipy,
-  because the package's `__init__` imports the layered engine (about 0.35 s).
+  package root imports its engine exports (`StreamSource`, `make_case`, `write_case`, …) on first use
+  through a module `__getattr__`, so `import open_eeg_synth.classic` loads numpy only (tested in a
+  fresh interpreter: 0.02 s, against 0.35 s when the root imported the engine eagerly), and the
+  first engine name costs the scipy import instead.
 - **Install by git tag**: `open-eeg-synth @ git+https://github.com/peak-mind-llc/open-eeg-synth.git@v0.2.0`
   (with `[tool.hatch.metadata] allow-direct-references = true` in the consumer if it builds with
   Hatchling). Optional extras are selected as `open-eeg-synth[edf] @ git+…`.
@@ -1800,11 +1808,13 @@ Each with the current recommendation; the questions the implementation answered 
     labels is exported; a wider reliability ramp (4 times the floor) removes most of the remaining
     cases at the cost of changing one tested reference value.
 17. **Scheduler corner cases.** The queue of pushed events grows without bound when
-    `rate × (length + gap)` reaches one; an exclusive plug-in that is bound but never rendered still
-    takes part in scheduling; and the `Occupancy`'s list of registered participants compares plug-ins
-    by equality, so two value-equal dataclass plug-ins can be taken for one at registration. None is
-    reachable with the built-in plug-ins. Recommendation: fix before the first exclusive plug-in ships.
-18. **Artifact parameters in the spec identity.** `ArtifactSpec.params` are not type-normalised, so an
-    int and a float spelling of the same parameter give two digests and two case ids for specs that
-    compare equal (§7.2). Recommendation: normalise them against the plug-in's constructor signature,
-    which changes existing digests and so belongs with a deliberate identity change.
+    `rate × (length + gap)` reaches one, and an exclusive plug-in that is bound but never rendered
+    still takes part in scheduling. Neither is reachable with the built-in plug-ins. (Registration
+    now compares plug-ins by identity, so two value-equal dataclass plug-ins are no longer taken for
+    one.) Recommendation: fix before the first exclusive plug-in ships.
+18. **Artifact parameters in the spec identity — closed.** An int and a float spelling of one
+    parameter used to give two case ids for specs that compared equal. The identity now reads every
+    non-bool number as a float (§7.2), while the values a plug-in receives are left as given; only
+    specs that spelled an artifact number as an int change id. Normalising the values themselves
+    against each plug-in's constructor signature was not needed for the identity and would have
+    changed what third-party plug-ins receive.

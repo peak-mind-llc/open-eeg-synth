@@ -28,7 +28,9 @@ All notable changes to this project are documented here. The format follows
   size and suggested remedies.
 - Case files: `make_case` and `write_case` write one EDF per condition (microvolts, no annotations,
   anonymised date), a sealed truth file and, optionally, every layer; `render_layers` rebuilds a
-  condition's layers from the truth file and checks them. A case condition lasts a positive whole
+  condition's layers from the truth file, checks them, and warns when the file was made under
+  another `SIGNAL_VERSION`. A case's id comes from its specification; artifact parameters count as
+  one value whether written as an int or a float. A case condition lasts a positive whole
   number of seconds, as EDF records do. `python -m open_eeg_synth make-case` does the same from the
   command line, and checks for `edfio` and whole-second durations before building anything.
 - `StreamSource`: chunked, seamless output for a recording application's mock amplifiers, with the
@@ -48,8 +50,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 - scipy is now a runtime dependency (`scipy>=1.10`), for streaming filters and anti-alias
-  decimation. The `classic` engine's code is unchanged and still uses only numpy, but importing it
-  through the package now also loads scipy.
+  decimation. The `classic` engine's code is unchanged and still uses only numpy, and importing it
+  still loads numpy only: the package root imports the engine's names on first use.
 - The version module is `open_eeg_synth.version` (was `_version`); `open_eeg_synth.__version__` is
   still exported, alongside the new public names.
 - New `realism` extra (MNE, mne-connectivity); the `dev` extra now includes it and `edfio`.

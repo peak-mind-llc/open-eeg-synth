@@ -120,7 +120,7 @@ class Occupancy:
         call this first, before it changes any of its own or the (possible) old Occupancy's
         state: a refused join must leave everything exactly as it was, not half-migrated.
         """
-        if art in self._exclusive:
+        if self._is_exclusive(art):
             stale_peers = {oid: o for oid, o in self._pruned_owners.items() if oid != id(art)}
             if stale_peers:
                 raise ValueError(
@@ -138,9 +138,12 @@ class Occupancy:
             )
         self._exclusive.append(art)
 
+    def _is_exclusive(self, art: EventArtifact) -> bool:
+        # identity, never equality: two value-equal dataclass plug-ins are two participants
+        return any(a is art for a in self._exclusive)
+
     def remove_exclusive(self, art: EventArtifact) -> None:
-        if art in self._exclusive:
-            self._exclusive.remove(art)
+        self._exclusive = [a for a in self._exclusive if a is not art]
 
     def drop_spans_of(self, owner: object) -> None:
         """Remove every span `owner` itself added: a same-occupancy rebind's own stale spans
@@ -425,7 +428,7 @@ class EventArtifact(_ParamsMixin, ABC):
         to - the event's actual final onset (state, amplitude, anything else it might compute
         from `onset`), never a pre-push candidate it was never really scheduled at. Occupancy
         collisions are resolved against whatever this artifact's own or a peer's earlier commit
-        has already claimed on the shared Occupancy, in the coordinator's global onset order
+        has already claimed on the shared Occupancy, in the shared scheduler's global onset order
         (`Occupancy.advance_exclusive`), so how many times this rebuilds (and so how many rng
         draws it costs) is itself deterministic, not dependent on chunk size or call order.
         """

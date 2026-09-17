@@ -246,6 +246,38 @@ def test_identity_is_stable_across_numeric_types_and_json():
     assert back == with_params and back.digest() == with_params.digest()
 
 
+def test_artifact_params_are_one_spec_whatever_their_number_type():
+    """An int and a float spelling of an artifact parameter are one spec with one case id (a bool
+    stays a bool, so True and 1 are two specs), while the values a plug-in receives are kept as
+    given (DESIGN §7.2)."""
+    base = resting_case(99, artifacts=(ArtifactSpec("blink", {"median_uv": 90.0}),))
+
+    def with_params(**params):
+        return dataclasses.replace(base, artifacts=(ArtifactSpec("blink", params),))
+
+    same = [
+        with_params(median_uv=90),
+        with_params(median_uv=np.int64(90)),
+        with_params(median_uv=np.float32(90.0)),
+    ]
+    for v in same:
+        assert v == base and hash(v.artifacts[0]) == hash(base.artifacts[0])
+        assert v.digest() == base.digest() and case_id_for(v) == case_id_for(base)
+        assert _json_round_trip(v).digest() == base.digest()
+    assert type(same[0].artifacts[0].params["median_uv"]) is int  # passed on as given
+    nested = with_params(rate_by_state={"eyes_open": 1}, peak_range_uv=[60, 250])
+    assert nested == with_params(rate_by_state={"eyes_open": 1.0}, peak_range_uv=(60.0, 250.0))
+    assert (
+        nested.digest()
+        == with_params(rate_by_state={"eyes_open": 1.0}, peak_range_uv=[60.0, 250.0]).digest()
+    )
+    flag, one = with_params(flag=True), with_params(flag=1)
+    assert flag != one and flag.digest() != one.digest() and case_id_for(flag) != case_id_for(one)
+    assert with_params(flag=True) == with_params(flag=True)
+    # canonical float spellings keep the digest they had
+    assert case_id_for(base) == "synth-1ebd4500"
+
+
 def test_artifact_streams_are_indexed_within_their_kind(_test_kinds):
     """<condition>:artifact:<kind>:<i> counts instances of the same kind only (DESIGN §8.1), so
     putting an artifact of another kind first leaves the existing layers' draws unchanged."""

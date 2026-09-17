@@ -1,4 +1,5 @@
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -110,12 +111,19 @@ def test_render_layers_raises_a_clear_error_for_a_condition_missing_from_recordi
         render_layers(d, "eyes_open")
 
 
-def test_render_layers_warns_on_a_generator_version_mismatch():
+def test_render_layers_warns_only_when_the_signal_version_differs():
+    """Another package version with the same SIGNAL_VERSION makes the same samples, so it does not
+    warn; another SIGNAL_VERSION does, and the warning names both package versions (DESIGN §7.4)."""
     case = make_case(resting_case(59, duration_s=1.0))
     d = case_truth(case, {"eyes_closed": "a.edf", "eyes_open": "b.edf"})
     d["generator"]["version"] = "0.0.0-not-the-real-version"
-    with pytest.warns(UserWarning, match="0.0.0-not-the-real-version"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         render_layers(d, "eyes_open")
+    d["generator"]["signal_version"] = version.SIGNAL_VERSION + 1
+    with pytest.warns(UserWarning, match="0.0.0-not-the-real-version") as caught:
+        render_layers(d, "eyes_open")
+    assert f"this is {version.__version__}" in str(caught[0].message)
 
 
 def test_rhythmic_bursts_carry_their_burst_times_through_the_truth_file():

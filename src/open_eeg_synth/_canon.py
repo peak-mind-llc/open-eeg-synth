@@ -72,6 +72,21 @@ def canonical_fields(obj: Any) -> None:
         object.__setattr__(obj, f.name, new)
 
 
+def numbers_as_float(value: Any) -> Any:
+    """``value`` (as ``json_plain`` returns it) with every number that is not a bool read as a
+    float, recursively: the identity form of free-form parameters, where ``50`` and ``50.0`` are
+    one value and ``True`` and ``1`` are two."""
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, dict):
+        return {k: numbers_as_float(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [numbers_as_float(v) for v in value]
+    return value
+
+
 def json_plain(value: Any) -> Any:
     """``value`` as JSON reads it back: numpy scalars and arrays become Python, tuples lists."""
 

@@ -12,7 +12,13 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 import open_eeg_synth.artifacts  # noqa: F401  (registers the built-in artifact kinds on import)
-from open_eeg_synth._canon import canonical_fields, inf_from_json, inf_to_json, json_plain
+from open_eeg_synth._canon import (
+    canonical_fields,
+    inf_from_json,
+    inf_to_json,
+    json_plain,
+    numbers_as_float,
+)
 from open_eeg_synth.brain.layer import BrainLayer, BrainSpec
 from open_eeg_synth.brain.network import NetworkWiring, wire_network
 from open_eeg_synth.brain.placement import placed_centres, region_centres
@@ -35,13 +41,35 @@ class SensorSpec:
 
 @dataclass(frozen=True)
 class ArtifactSpec:
+    """An artifact kind and its plug-in's constructor arguments (DESIGN §7.2).
+
+    ``params`` are kept exactly as JSON reads them back, so a plug-in receives what was given. The
+    spec's identity (equality, hash, the case digest) reads every number that is not a bool as a
+    float: ``{"x": 50}`` and ``{"x": 50.0}`` are one spec, ``{"x": True}`` and ``{"x": 1}`` two.
+    """
+
     kind: str
     params: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         canonical_fields(self)
-        # params are the plug-in's constructor arguments, kept exactly as JSON reads them back
         object.__setattr__(self, "params", json_plain(dict(self.params)))
+
+    def identity(self) -> dict:
+        """The canonical form the digest reads: ``params`` with numbers as floats."""
+        return {"kind": self.kind, "params": numbers_as_float(self.params)}
+
+    def _key(self) -> str:
+        # JSON keeps what dict equality loses: true is not 1.0
+        return json.dumps(self.identity(), sort_keys=True, separators=(",", ":"))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ArtifactSpec):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self) -> int:
+        return hash(self._key())
 
 
 @dataclass(frozen=True)
@@ -157,9 +185,11 @@ class CaseSpec:
         )
 
     def digest(self) -> str:
-        blob = json.dumps(
-            self.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False
-        ).encode()
+        """8-byte blake2b of the canonical JSON: ``to_dict`` with each artifact's identity form
+        (``ArtifactSpec.identity``), so specs that compare equal digest equally."""
+        d = self.to_dict()
+        d["artifacts"] = [a.identity() for a in self.artifacts]
+        blob = json.dumps(d, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
