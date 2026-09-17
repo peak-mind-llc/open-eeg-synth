@@ -15,6 +15,16 @@ _DATA = resources.files("open_eeg_synth.headmodel") / "data"
 _CHUNK = 512
 
 
+def _available_head_models() -> tuple[str, ...]:
+    return tuple(sorted(p.name[: -len(".npz")] for p in _DATA.iterdir() if p.name.endswith(".npz")))
+
+
+def _require_known_head_model(name: str) -> None:
+    known = _available_head_models()
+    if name not in known:
+        raise ValueError(f"unknown head model {name!r}; available: {', '.join(known)}")
+
+
 @dataclass(frozen=True)
 class HeadModel:
     name: str
@@ -132,6 +142,7 @@ def head_model_channels(name: str = "colin27_19ch") -> tuple[str, ...]:
     ``source_pos``, ...) that ``load_head_model`` does. Cheap enough to call for every
     ``CaseSpec``, even one that is never rendered (``CaseSpec.__post_init__`` uses it to
     canonicalise ``channels`` against the head model actually selected)."""
+    _require_known_head_model(name)
     with resources.as_file(_DATA / f"{name}.npz") as p:
         z = np.load(p, allow_pickle=False)
         return tuple(str(c) for c in z["channel_names"])
@@ -139,6 +150,7 @@ def head_model_channels(name: str = "colin27_19ch") -> tuple[str, ...]:
 
 @lru_cache(maxsize=4)
 def load_head_model(name: str = "colin27_19ch") -> HeadModel:
+    _require_known_head_model(name)
     with resources.as_file(_DATA / f"{name}.npz") as p:
         z = np.load(p, allow_pickle=False)
         return HeadModel(

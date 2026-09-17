@@ -224,7 +224,10 @@ class RhythmicBursts:
         _validate_positive_f0(self)
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
-        name = "plant:rhythmic_bursts:" + "+".join(self.sites)
+        # the frequency rides in the compiled name too (as FocalSlow's does), so two
+        # RhythmicBursts plants at the same site(s) but different f0_hz compile to distinct
+        # rhythms instead of colliding
+        name = "plant:rhythmic_bursts:" + "+".join(self.sites) + f":{self.f0_hz:g}hz"
         return (
             RhythmSpec(
                 name,

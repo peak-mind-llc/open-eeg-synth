@@ -264,6 +264,31 @@ def test_condition_names_must_be_unique():
         CaseSpec(seed=1, conditions=(ConditionSpec("a", 1.0, tl), ConditionSpec("a", 1.0, tl)))
 
 
+def test_loose_spec_values_that_used_to_pass_silently_are_now_rejected():
+    """A wrong type used to pass silently: bool(...) coerced any string to True/False, float(...)
+    parsed a numeric string, and bool is an int subclass so it sailed through operator.index."""
+    with pytest.raises(TypeError, match="perturb_head"):
+        CaseSpec(seed=1, perturb_head="false")  # a truthy string, not the bool False
+    with pytest.raises(TypeError, match="fs"):
+        CaseSpec(seed=1, fs="256")
+    with pytest.raises(TypeError, match="seed"):
+        CaseSpec(seed=True)  # bool is not a seed
+    tl = StateTimeline.constant("eyes_open", 1.0)
+    with pytest.raises(TypeError, match="duration_s"):
+        ConditionSpec("a", "5.0", tl)  # non-numeric duration
+    with pytest.raises(TypeError, match="white_uv"):
+        SensorSpec(white_uv="1.5")
+
+
+def test_int_is_still_accepted_for_a_float_field():
+    """The tightened type check must not stop an int from filling a float-annotated field: only
+    the previously-silent wrong *types* (str, bool-into-int/float) are newly rejected."""
+    a = CaseSpec(seed=1, fs=256)
+    b = CaseSpec(seed=1, fs=256.0)
+    assert a == b and a.digest() == b.digest() and type(a.fs) is float
+    assert SensorSpec(white_uv=2).white_uv == 2.0
+
+
 def test_infinite_durations_survive_strict_json():
     spec = CaseSpec(
         seed=1,

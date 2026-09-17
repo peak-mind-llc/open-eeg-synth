@@ -37,7 +37,7 @@ class Blink(EventArtifact):
         # T9/T10-referenced map on the full head's scale (P28, P30): the drawn peak is the value
         # at the full head's loudest channel (Fp1/Fp2), whichever channels this case records.
         self.pattern = patterns.empirical(
-            "blink", ctx.channels, rng=ctx.subject_rng, electrode_pos=ctx.electrode_pos
+            self.jitter_pattern, ctx.channels, rng=ctx.subject_rng, electrode_pos=ctx.electrode_pos
         )
         # truth channels: |pattern| >= 0.3 of the full-head maximum (typically Fp1, Fp2, F7, F8,
         # F3, F4 on the 10-20 set)

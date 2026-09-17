@@ -30,6 +30,12 @@ _EOG_PATH = resources.files("open_eeg_synth.artifacts") / "data" / "eog_patterns
 EYE_CENTRE = np.array([0.0, 0.085, -0.020])  # between the eyes, head frame, metres
 REFERENCE_CHANNELS = ("T9", "T10")  # the eye maps are referenced to their mean at load (P28)
 
+# The per-subject jitter `empirical` draws (its `jitter_sd` default) and clips to, the one
+# definition `case.make_subject` also draws from when it records a jitter for a plug-in's
+# TruthRecord: a subject's recorded jitter must always describe exactly what got rendered.
+JITTER_SD = 0.6
+JITTER_CLIP = 1.0
+
 # A channel's jitter step is its sd, capped at this fraction of its own |mean|. P29 asks that no
 # z in [-1, 1] flip a channel's sign; on the shipped file the sd exceeds |mean| on 30 of the 64
 # blink channels and 58 of the 64 heog channels, so the uncapped `mean + z * sign(mean) * sd`
@@ -182,7 +188,7 @@ def empirical(
     channels: Sequence[str],
     *,
     rng: np.random.Generator | None = None,
-    jitter_sd: float = 0.6,
+    jitter_sd: float = JITTER_SD,
     electrode_pos: np.ndarray | None = None,
     z: float | None = None,
 ) -> np.ndarray:
@@ -210,7 +216,7 @@ def empirical(
     """
     if z is None:
         z = float(rng.normal(0.0, jitter_sd)) if rng is not None else 0.0
-    z = float(np.clip(z, -1.0, 1.0))
+    z = float(np.clip(z, -JITTER_CLIP, JITTER_CLIP))
     names, full = _full_map(name, z)
     out = np.empty(len(channels))
     found: list[int] = []

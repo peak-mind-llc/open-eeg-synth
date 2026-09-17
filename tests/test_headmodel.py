@@ -16,6 +16,17 @@ def test_head_model_channels_matches_load_head_model_without_the_lead_field():
     assert head_model_channels() == load_head_model().channels == CHANNELS_19
 
 
+def test_unknown_head_model_raises_a_clear_error_listing_the_available_ones():
+    """An unknown name used to hit np.load with a nonexistent path and raise a raw
+    FileNotFoundError naming the package data path; it must raise ValueError listing the head
+    models that are actually available instead."""
+    with pytest.raises(ValueError, match="colin27_19ch") as exc_info:
+        load_head_model("does_not_exist")
+    assert "does_not_exist" in str(exc_info.value)
+    with pytest.raises(ValueError, match="colin27_19ch"):
+        head_model_channels("does_not_exist")
+
+
 def test_gain_is_free_dot_normal(head):
     g = head.gain
     assert g.shape == (19, head.n_sources)

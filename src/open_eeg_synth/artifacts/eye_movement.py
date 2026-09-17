@@ -32,7 +32,7 @@ class EyeMovement(EventArtifact):
     def bind(self, ctx: RenderContext) -> None:
         super().bind(ctx)
         self.pattern = patterns.empirical(
-            "heog", ctx.channels, rng=ctx.subject_rng, electrode_pos=ctx.electrode_pos
+            self.jitter_pattern, ctx.channels, rng=ctx.subject_rng, electrode_pos=ctx.electrode_pos
         )
         self.channels = tuple(
             ch for ch, p in zip(ctx.channels, self.pattern, strict=True) if abs(p) >= 0.3

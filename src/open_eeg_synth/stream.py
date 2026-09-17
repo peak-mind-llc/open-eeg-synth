@@ -53,6 +53,9 @@ class StreamSource:
     ``classic.RealisticEEGSynthesizer``. Call :meth:`next_chunk` (and, in lockstep,
     :meth:`due_markers`) repeatedly as new samples are needed; ``.truth`` and ``.seed`` are read
     at any time.
+
+    ``channel_labels`` must not repeat an EEG electrode (CaseSpec rejects duplicate channels
+    after alias canonicalisation); heart-rate labels are the exception and may repeat freely.
     """
 
     def __init__(

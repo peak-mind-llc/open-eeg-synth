@@ -207,6 +207,17 @@ def test_two_focal_slow_plants_at_one_site_different_frequencies():
     assert band_power(planted, FS, 5.0, 7.0)[f7] > 4 * band_power(clean, FS, 5.0, 7.0)[f7]
 
 
+def test_two_rhythmic_bursts_plants_at_one_site_different_frequencies():
+    """The compiled rhythm name must carry the frequency, as FocalSlow's already does (see
+    above), so two RhythmicBursts plants at the same site(s) but different frequencies compile
+    to distinct rhythms instead of colliding."""
+    two = (RhythmicBursts(("Fz",), f0_hz=6.5), RhythmicBursts(("Fz",), f0_hz=10.0))
+    spec = resting_case(3, duration_s=1.0, plants=two, artifacts=())
+    names = [r.name for r in compiled_rhythms(spec) if r.name.startswith("plant")]
+    assert names == ["plant:rhythmic_bursts:Fz:6.5hz", "plant:rhythmic_bursts:Fz:10hz"]
+    make_case(spec)  # renders without raising "duplicate compiled rhythm name(s)"
+
+
 def test_lateral_imbalance_rejects_unknown_side():
     with pytest.raises(ValueError, match="side"):
         LateralImbalance("alpha", "Left", 0.4)

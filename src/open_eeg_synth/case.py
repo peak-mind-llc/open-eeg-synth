@@ -260,6 +260,7 @@ def make_subject(spec: CaseSpec) -> Subject:
     # draws are unaffected: each kind's own subject stream (subject:artifact:<kind>) is named and
     # seeded independently of every other stream, so simply not drawing from a non-jittering
     # kind's stream cannot shift any other kind's draws.
+    from open_eeg_synth.artifacts import patterns
     from open_eeg_synth.artifacts.registry import ARTIFACTS, discover
 
     # discover() warns again on every call; only forward a warning this process has not already
@@ -277,8 +278,8 @@ def make_subject(spec: CaseSpec) -> Subject:
     for k in sorted({a.kind for a in spec.artifacts}):
         if getattr(ARTIFACTS.get(k), "jitter_pattern", None) is None:
             continue
-        z = stream_rng(spec.seed, f"subject:artifact:{k}").normal(0.0, 0.6)
-        jitter[k] = float(np.clip(z, -1.0, 1.0))
+        z = stream_rng(spec.seed, f"subject:artifact:{k}").normal(0.0, patterns.JITTER_SD)
+        jitter[k] = float(np.clip(z, -patterns.JITTER_CLIP, patterns.JITTER_CLIP))
     return Subject(head, mixing, placements, f0, wiring, jitter, rows, offsets, lags)
 
 

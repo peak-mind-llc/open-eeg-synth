@@ -10,11 +10,37 @@ from __future__ import annotations
 
 import json
 import math
+import numbers
 import operator
 from dataclasses import fields
 from typing import Any
 
-_SCALAR = {"float": float, "int": operator.index, "bool": bool, "str": str}
+
+def _scalar(base: str, obj: Any, name: str, v: Any) -> Any:
+    """``v`` coerced to the plain Python type ``base`` names, or a ``TypeError`` naming the
+    field: a wrong type used to pass silently here (``bool("false")`` is truthy, ``float("256")``
+    parses a numeric string, ``operator.index(True)`` accepts a bool as an int) instead of being
+    rejected. ``numbers.Integral``/``numbers.Real`` (not the bare ``int``/``float`` builtins) so
+    numpy scalars keep working exactly as before - they are registered with both ABCs - while an
+    actual ``bool`` (itself an ``int`` and a ``numbers.Integral``) is always refused except for a
+    genuinely ``bool``-typed field.
+    """
+    is_bool = isinstance(v, bool)
+    if base == "bool":
+        if not is_bool:
+            raise TypeError(f"{type(obj).__name__}.{name} must be bool, got {v!r}")
+        return v
+    if base == "int":
+        if is_bool or not isinstance(v, numbers.Integral):
+            raise TypeError(f"{type(obj).__name__}.{name} must be an int, got {v!r}")
+        return operator.index(v)
+    if base == "float":
+        if is_bool or not isinstance(v, numbers.Real):
+            raise TypeError(f"{type(obj).__name__}.{name} must be a number, got {v!r}")
+        return float(v)
+    if not isinstance(v, str):
+        raise TypeError(f"{type(obj).__name__}.{name} must be a str, got {v!r}")
+    return v
 
 
 def canonical_fields(obj: Any) -> None:
@@ -31,8 +57,8 @@ def canonical_fields(obj: Any) -> None:
         base = t[: -len(" | None")] if optional else t
         if optional and v is None:
             continue
-        if base in _SCALAR:
-            new = _SCALAR[base](v)
+        if base in ("bool", "int", "float", "str"):
+            new = _scalar(base, obj, f.name, v)
         elif base == "dict[str, float]":
             new = {str(k): float(x) for k, x in v.items()}
         elif base == "tuple[float, float]":

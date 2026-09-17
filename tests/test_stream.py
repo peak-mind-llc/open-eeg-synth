@@ -81,6 +81,23 @@ def test_validation_rejects_non_finite_srate():
             StreamSource(["O1"], bad, seed=1)
 
 
+def test_duplicate_eeg_labels_are_rejected_but_heart_labels_may_repeat():
+    """CaseSpec rejects duplicate channels after alias canonicalisation, and StreamSource's own
+    channels feed straight into one, so two EEG rows for the same electrode now raise - a literal
+    repeat or two labels that alias to the same one (T7 canonicalises to T3). Heart labels are
+    excluded from that channel set before it ever reaches CaseSpec (several HR rows commonly
+    carry the same ECG), so they may still repeat."""
+    with pytest.raises(ValueError, match="duplicate"):
+        StreamSource(["O1", "O1"], 256.0, seed=1)
+    with pytest.raises(ValueError, match="duplicate"):
+        StreamSource(["T3", "T7"], 256.0, seed=1)
+
+    src = StreamSource(["O1", "O2", "HR", "HR"], 256.0, seed=1)
+    chunk = src.next_chunk(32)
+    assert chunk.shape == (4, 32)
+    assert np.array_equal(chunk[2], chunk[3])  # both HR rows carry the same ECG
+
+
 def test_chunk_shape_dtype_scale_and_determinism():
     a = StreamSource(Q21, 256.0, seed=7)
     b = StreamSource(Q21, 256.0, seed=7)
