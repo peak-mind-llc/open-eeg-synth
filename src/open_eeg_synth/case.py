@@ -326,14 +326,22 @@ def _plant_is_silent(plant, states: set[str]) -> bool:
     return all(gain.get(s, 1.0) == 0.0 for s in states)
 
 
+def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Recording:
+    """Render one condition's layers and attach its timeline and its (un-silenced) plants.
+
+    The single per-condition body shared by :func:`make_case` and
+    :func:`casefile.truth.render_layers`, so a truth file's re-rendered plants always match what
+    ``make_case`` produced: both call this, never duplicate its plant-silencing logic.
+    """
+    eng = make_engine(spec, subject, condition)
+    rec = eng.render_all(int(round(condition.duration_s * spec.fs)))
+    rec.timeline = condition.timeline
+    states = {seg.state for seg in condition.timeline.segments}
+    rec.plants = [p.record() for p in spec.plants if not _plant_is_silent(p, states)]
+    return rec
+
+
 def make_case(spec: CaseSpec) -> Case:
     subject = make_subject(spec)
-    recordings: dict[str, Recording] = {}
-    for cond in spec.conditions:
-        eng = make_engine(spec, subject, cond)
-        rec = eng.render_all(int(round(cond.duration_s * spec.fs)))
-        rec.timeline = cond.timeline
-        states = {seg.state for seg in cond.timeline.segments}
-        rec.plants = [p.record() for p in spec.plants if not _plant_is_silent(p, states)]
-        recordings[cond.name] = rec
+    recordings = {cond.name: make_recording(spec, subject, cond) for cond in spec.conditions}
     return Case(spec, case_id_for(spec), subject, recordings)
