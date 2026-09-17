@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import lfilter, resample_poly
+from scipy.signal import firwin, lfilter, resample_poly
 
 
 class OU:
@@ -31,7 +31,12 @@ class OU:
         self.zi = (self.a * x0).reshape(self.n, 1)  # transposed DF-II state: a * y[-1]
 
     def step(self, white: np.ndarray, mu: np.ndarray | float | None = None) -> np.ndarray:
-        """Advance by ``white.shape[1]`` samples. ``mu`` may be a per-sample array."""
+        """Advance by ``white.shape[1]`` samples.
+
+        ``mu`` may be a per-sample array overriding ``self.mu`` for this call; it shifts the mean
+        immediately, sample by sample — it is added on top of the relaxing deviation, not a new
+        stationary target the process relaxes *towards* over ``tau_s``.
+        """
         dev, self.zi = lfilter([self.g], [1.0, -self.a], white, axis=-1, zi=self.zi)
         return dev + (self.mu if mu is None else mu)
 
@@ -65,11 +70,15 @@ class PinkCascade:
             a = np.array([1.0, (wp - c) / (c + wp)])
             self.sections.append((b, a))
         self.zi = [np.zeros((self.n, 1)) for _ in self.sections]
-        probe = np.random.Generator(np.random.PCG64(12345)).standard_normal((1, 1 << 17))
-        y = probe
+        # Exact calibration: for white input of unit variance, Var(output) = sum(h**2) where h is
+        # the cascade's impulse response. int(40 * fs) samples is enough for the lowest pole (f_lo)
+        # to ring out (confirmed convergent to 5 significant figures by int(20 * fs)); no random
+        # draw is involved, so this does not go through seeds.stream_rng.
+        h = np.zeros(int(40 * self.fs))
+        h[0] = 1.0
         for b, a in self.sections:
-            y = lfilter(b, a, y, axis=-1)
-        self.scale = 1.0 / float(y[:, 1 << 14 :].std())
+            h = lfilter(b, a, h)
+        self.scale = 1.0 / float(np.sqrt(np.sum(h**2)))
 
     def warm_up(self, rng: np.random.Generator, seconds: float) -> None:
         self.process(rng.standard_normal((int(seconds * self.fs), self.n)).T)
@@ -82,11 +91,25 @@ class PinkCascade:
 
 
 def lowpass_decimate(x: np.ndarray, factor: int) -> np.ndarray:
-    """Anti-alias low-pass and decimate along the last axis, as an amplifier front end would."""
-    return resample_poly(x, up=1, down=int(factor), axis=-1, window=("kaiser", 5.0))
+    """Anti-alias low-pass and decimate along the last axis, as an amplifier front end would.
+
+    Filters with a Kaiser-windowed FIR (passband to 0.9 of the *new* Nyquist, stopband from the new
+    Nyquist on) before down-sampling by ``factor``, so nothing above the new Nyquist survives to
+    fold back into the passband. Runs over one whole finite block: ``x``'s edges are zero-padded,
+    there is no carried filter state between calls, so a streaming caller must render extra margin
+    on each side and discard it rather than decimate consecutive short chunks back to back.
+    """
+    factor = int(factor)
+    taps = firwin(50 * factor + 1, 0.9 / factor, window=("kaiser", 8.0))
+    return resample_poly(x, up=1, down=factor, axis=-1, window=taps)
 
 
 def raised_cosine_envelope(n: int, fs: float, rise_s: float, fall_s: float) -> np.ndarray:
+    """A unit-peak envelope: raised-cosine rise, flat top, raised-cosine fall.
+
+    If ``rise_s + fall_s`` exceeds ``n / fs`` the two ramps are clipped to fit and meet without a
+    flat top; the peak then stays below 1.0 (the fall ramp starts before the rise ramp reaches it).
+    """
     env = np.ones(int(n))
     nr = min(n // 2, int(round(rise_s * fs)))
     nf = min(n - nr, int(round(fall_s * fs)))
