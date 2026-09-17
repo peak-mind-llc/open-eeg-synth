@@ -725,30 +725,158 @@ def test_exclusive_tie_break_goes_to_the_first_registered_artifact():
     assert b._truth_onset == [150]  # b is pushed past a's [100, 150) claim
 
 
-def test_occupancy_prunes_spans_behind_the_watermark_over_a_long_stream():
-    """A long-running stream (DESIGN §7.3/§8.2 "S2") keeps scheduling exclusive events forever;
-    without pruning, `Occupancy.spans` grows by one entry per committed event and never shrinks,
-    so `next_free`'s scan gets slower and slower the longer the stream runs. A span that ends at
-    or before every registered exclusive artifact's own earliest possible next onset (`_earliest`,
-    which only ever increases) can never overlap a future event, so it is safe to drop. `spans`
-    should stay small no matter how long the stream runs, and placement must stay collision-free
-    exactly as it would without pruning."""
-    tl = StateTimeline.constant("eyes_open")
-    occ = Occupancy()
-    a = Pulse(rate_by_state={"eyes_open": 5.0}, exclusive=True, min_gap_s=0.05, length_s=0.05)
-    b = Pulse(rate_by_state={"eyes_open": 5.0}, exclusive=True, min_gap_s=0.05, length_s=0.05)
-    a.bind(_ctx(tl, seed=11, occupancy=occ, name="artifact:a"))
-    b.bind(_ctx(tl, seed=12, occupancy=occ, name="artifact:b"))
+def _run_long_stream(occ, cfgs, seeds, names, seconds=600.0, chunk_s=1.0):
+    """Bind `cfgs` (Pulse kwargs) as exclusive artifacts sharing `occ`, render `seconds` of
+    simulated stream in `chunk_s` chunks, and return (artifacts, max span count seen)."""
+    arts = [Pulse(**c, exclusive=True) for c in cfgs]
+    for art, seed, name in zip(arts, seeds, names, strict=True):
+        art.bind(_ctx(StateTimeline.constant("eyes_open"), seed=seed, occupancy=occ, name=name))
     max_spans = 0
-    for t0 in range(0, int(600 * FS), 100):  # 600 simulated seconds, 1 s chunks
-        a.render(t0, 100)
-        b.render(t0, 100)
+    n = int(chunk_s * FS)
+    for t0 in range(0, int(seconds * FS), n):
+        for art in arts:
+            art.render(t0, n)
         max_spans = max(max_spans, len(occ.spans))
-    truth = a.truth() + b.truth()
+    return arts, max_spans
+
+
+def test_occupancy_prunes_spans_behind_the_watermark_over_a_long_stream():
+    """A long-running stream keeps scheduling exclusive events forever; without pruning,
+    `Occupancy.spans` grows by one entry per committed event and never shrinks, so `next_free`'s
+    scan gets slower and slower the longer the stream runs. A span that ends at or before every
+    registered exclusive artifact's own earliest possible next onset can never overlap a future
+    event, so it is safe to drop. `spans` should stay small no matter how long the stream runs,
+    scheduling must stay collision-free, and it must match scheduling with pruning switched off
+    bit for bit - pruning is a memory optimisation, not a second scheduler."""
+    cfgs = [dict(rate_by_state={"eyes_open": 5.0}, min_gap_s=0.05, length_s=0.05)] * 2
+    seeds, names = (11, 12), ("artifact:a", "artifact:b")
+
+    occ_pruned = Occupancy()
+    arts_pruned, max_spans = _run_long_stream(occ_pruned, cfgs, seeds, names)
+    occ_control = Occupancy()
+    occ_control._prune_stale_spans = lambda: None  # pruning switched off
+    arts_control, _ = _run_long_stream(occ_control, cfgs, seeds, names)
+
+    truth = [t.to_dict() for a in arts_pruned for t in a.truth()]
+    truth_control = [t.to_dict() for a in arts_control for t in a.truth()]
     assert len(truth) > 2000  # the scheduler really did keep going the whole time
     assert max_spans < 20  # never grows past a handful of not-yet-safe-to-drop spans
-    offsets = sorted((t.onset_s, t.offset_s) for t in truth)
+    assert truth == truth_control  # pruning never changes a scheduling decision
+    offsets = sorted((t.onset_s, t.offset_s) for t in [tr for a in arts_pruned for tr in a.truth()])
     assert all(offsets[i][1] <= offsets[i + 1][0] + 1e-9 for i in range(len(offsets) - 1))
+
+
+def test_pruning_stays_bounded_with_a_rare_exclusive_peer():
+    """A quiet-but-live peer (rate 0.002/s) commits an event only rarely, so its own `_earliest`
+    sits at whatever sample its last (long-ago) commit ended at. Flooring the watermark on
+    `_earliest` alone would let this peer hold the whole Occupancy's pruning back to that stale
+    value; the fix also floors on the peer's own cached next candidate (`_next`), which keeps
+    advancing even while unconsumed, so pruning keeps working regardless."""
+    cfgs = [
+        dict(rate_by_state={"eyes_open": 2.0}, length_s=0.1),
+        dict(rate_by_state={"eyes_open": 0.002}, length_s=0.1),
+    ]
+    seeds, names = (1, 2), ("artifact:a", "artifact:r")
+
+    occ_pruned = Occupancy()
+    arts_pruned, max_spans = _run_long_stream(occ_pruned, cfgs, seeds, names)
+    occ_control = Occupancy()
+    occ_control._prune_stale_spans = lambda: None
+    arts_control, _ = _run_long_stream(occ_control, cfgs, seeds, names)
+
+    truth = [t.to_dict() for a in arts_pruned for t in a.truth()]
+    truth_control = [t.to_dict() for a in arts_control for t in a.truth()]
+    assert max_spans < 20  # bounded despite the rare peer - not the ~1150 it was before the fix
+    assert truth == truth_control
+
+
+def test_pruning_stays_bounded_with_a_peer_gated_off_by_the_timeline():
+    """A peer whose only nonzero rate applies to a state ("drowsy") this constant-eyes_open
+    timeline never visits still has `_rate_max > 0` (so it is not excluded outright): it keeps
+    drawing and rejecting candidates forever and never commits, so its `_earliest` sits at 0 for
+    the whole stream. Flooring on `_earliest` alone would hold the shared watermark at 0 forever;
+    flooring on the peer's own cached `_next` candidate (which tracks close to "now" even though
+    every draw is rejected) keeps pruning working."""
+    cfgs = [
+        dict(rate_by_state={"eyes_open": 2.0}, length_s=0.1),
+        dict(rate_by_state={"drowsy": 1.0}, length_s=0.1),
+    ]
+    seeds, names = (1, 2), ("artifact:a", "artifact:g")
+
+    occ_pruned = Occupancy()
+    arts_pruned, max_spans = _run_long_stream(occ_pruned, cfgs, seeds, names)
+    occ_control = Occupancy()
+    occ_control._prune_stale_spans = lambda: None
+    arts_control, _ = _run_long_stream(occ_control, cfgs, seeds, names)
+
+    truth = [t.to_dict() for a in arts_pruned for t in a.truth()]
+    truth_control = [t.to_dict() for a in arts_control for t in a.truth()]
+    assert arts_pruned[1].truth() == []  # the gated peer really never fires
+    assert max_spans < 20  # bounded despite the permanently-gated peer
+    assert truth == truth_control
+
+
+def test_same_occupancy_rebind_after_pruning_a_peers_span_is_refused():
+    """A same-occupancy rebind resets the rebinding artifact's own scheduler to sample 0 and
+    drops only its own spans (`bind`'s docstring) - it relies on every *other* participant's
+    already-committed spans still being in `occ.spans` to avoid re-colliding with their history.
+    Once pruning has discarded a peer's span, that history is gone, and a naive rebind can
+    schedule straight through it (reproduced against the unfixed code: 115 of 122 replayed events
+    overlapped the peer). The occupancy must instead refuse the rebind."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    a = Pulse(rate_by_state={"eyes_open": 2.0}, exclusive=True, length_s=0.3)
+    b = Pulse(rate_by_state={"eyes_open": 2.0}, exclusive=True, length_s=0.3)
+    a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+    b.bind(_ctx(tl, seed=2, occupancy=occ, name="artifact:b"))
+    for t0 in range(0, 6000, 100):
+        a.render(t0, 100)
+        b.render(t0, 100)
+    assert occ._pruned_owners - {a}  # the scenario really did prune a peer's span
+
+    with pytest.raises(ValueError, match="pruning"):
+        a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+
+
+def test_same_occupancy_rebind_stays_collision_free_with_pruning_off():
+    """Control for the refusal above: with pruning switched off, nothing was ever forgotten, so
+    the pre-existing same-occupancy rebind path (drop only the rebinding artifact's own spans,
+    replay from sample 0) is exactly as safe as it always was."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    occ._prune_stale_spans = lambda: None  # pruning switched off
+    a = Pulse(rate_by_state={"eyes_open": 2.0}, exclusive=True, length_s=0.3)
+    b = Pulse(rate_by_state={"eyes_open": 2.0}, exclusive=True, length_s=0.3)
+    a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+    b.bind(_ctx(tl, seed=2, occupancy=occ, name="artifact:b"))
+    for t0 in range(0, 6000, 100):
+        a.render(t0, 100)
+        b.render(t0, 100)
+
+    a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))  # allowed: nothing was pruned
+    for t0 in range(0, 6000, 100):
+        a.render(t0, 100)
+
+    spans = sorted((t.onset_s, t.offset_s) for t in a.truth() + b.truth())
+    assert all(spans[i][1] <= spans[i + 1][0] + 1e-9 for i in range(len(spans) - 1))
+
+
+def test_single_artifact_rebind_still_works_after_pruning():
+    """A same-occupancy rebind stays unrestricted when there is no peer to lose history about:
+    every span pruning discards on a one-artifact Occupancy is that same artifact's own, so
+    `add_exclusive`'s refusal never triggers and rebinding keeps working."""
+    tl = StateTimeline.constant("eyes_open")
+    occ = Occupancy()
+    art = Pulse(rate_by_state={"eyes_open": 5.0}, exclusive=True, min_gap_s=0.05, length_s=0.05)
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))
+    for t0 in range(0, 6000, 100):
+        art.render(t0, 100)
+    assert occ._pruned_owners  # pruning actually ran
+
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:a"))  # same occupancy, no exception
+    x = art.render(0, 3000)
+    assert np.any(x)
+    assert art.truth()
 
 
 @pytest.fixture(autouse=True, scope="module")

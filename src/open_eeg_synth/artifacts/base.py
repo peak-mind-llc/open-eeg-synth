@@ -87,6 +87,11 @@ class Occupancy:
         self._span_owners: list[object] = []  # parallel to spans; the artifact that added each
         self._exclusive: list[EventArtifact] = []
         self._advanced_to = 0
+        # Every owner (artifact) whose span has ever been pruned (see _prune_stale_spans), kept
+        # forever once added - not just the most recent prune - so add_exclusive can refuse a
+        # same-occupancy rebind whenever this occupancy has EVER forgotten a peer's history, not
+        # only when the most recent prune happened to touch it.
+        self._pruned_owners: set[object] = set()
 
     def add_exclusive(self, art: EventArtifact) -> None:
         """Register `art` as a participant, unless it already is one (a same-occupancy rebind).
@@ -94,16 +99,32 @@ class Occupancy:
         A genuinely new artifact cannot join after this occupancy has already advanced: the
         artifacts already on it may have committed spans and reported truth for that span, and
         a late joiner scheduling into it would be attempting to retroactively share time that is
-        already settled. Rebinding an artifact already on this occupancy is always allowed (its
-        own scheduler state was just reset by bind()); nothing here needs to change for it since
-        `advance_exclusive` re-derives everything from each artifact's own current state, not
-        from a shared watermark.
+        already settled.
+
+        A same-occupancy rebind is allowed only if pruning has never discarded a *peer's* span.
+        `EventArtifact.bind`'s rebind path resets `art`'s own scheduler to sample 0 and drops
+        only `art`'s own spans (`drop_spans_of`), relying on every other participant's
+        already-committed spans still being in `self.spans` so `art`'s freshly-scheduled events
+        get pushed clear of them, exactly as a fresh instance sharing this occupancy would be.
+        Once `_prune_stale_spans` has thrown away a peer's span, that safety net is gone: `art`
+        replaying from 0 can schedule straight through history this occupancy no longer
+        remembers (confirmed with a reproducer: 115 of 122 replayed events overlapped the peer).
+        A rebind that only ever pruned its *own* spans is unaffected - dropping them was already
+        going to happen anyway - so a single-artifact occupancy keeps rebinding freely forever.
 
         Deliberately does nothing else and raises before appending, so `EventArtifact.bind` can
         call this first, before it changes any of its own or the (possible) old Occupancy's
         state: a refused join must leave everything exactly as it was, not half-migrated.
         """
         if art in self._exclusive:
+            stale_peers = self._pruned_owners - {art}
+            if stale_peers:
+                raise ValueError(
+                    f"{art!r} cannot rebind to this Occupancy: pruning has already discarded "
+                    f"span(s) belonging to {len(stale_peers)} other artifact(s) sharing it, so "
+                    "resuming from sample 0 could overlap history this Occupancy no longer "
+                    "remembers; bind a fresh Occupancy instead"
+                )
             return
         if self._advanced_to > 0:
             raise ValueError(
@@ -148,11 +169,12 @@ class Occupancy:
         render-call order or chunk size.
 
         Always re-derives progress from each artifact's own state rather than short-circuiting
-        on a shared "already advanced" watermark: an artifact already caught up to (or past)
-        `until` just peeks its cached candidate and finds it is not `< until`, which costs an
-        O(1) check, so nothing is skipped for an artifact that legitimately still needs
-        advancing (e.g. one whose own scheduler state was just reset by a same-occupancy
-        rebind).
+        on a shared "already advanced" flag: an artifact already caught up to (or past) `until`
+        just peeks its cached candidate and finds it is not `< until`, which costs an O(1) check,
+        so nothing is skipped for an artifact that legitimately still needs advancing (e.g. one
+        whose own scheduler state was just reset by a same-occupancy rebind). `_prune_stale_spans`
+        below does use a shared watermark, but only to decide which already-committed spans are
+        safe to forget, never to decide what gets scheduled next.
         """
         while True:
             best_onset: int | None = None
@@ -169,32 +191,62 @@ class Occupancy:
 
     def _prune_stale_spans(self) -> None:
         """Drop spans that can never overlap a future event, so a long stream's `spans` (and
-        `next_free`'s scan over it) does not grow without bound (DESIGN §7.3/§8.2, streaming
-        long-session review "S2").
+        `next_free`'s scan over it) does not grow without bound.
 
-        Every registered exclusive artifact's own `_earliest` (the earliest sample *it* could
-        next place an event at) only ever increases - each commit sets it to that event's end
-        plus its gap, never earlier than the onset just used, which was itself never before the
-        previous `_earliest`. So a span that ends at or before the smallest `_earliest` among the
-        artifacts that can still schedule (`_rate_max > 0`; a permanently silent artifact places
-        no floor at all) is behind every future onset and can be forgotten - `next_free`'s
-        collision check needs `start < end`, and every future `start` is now `>= end`. This is
-        purely a memory/scan-cost cleanup: it never changes which onset gets accepted, so
-        chunk-invariance (DESIGN §8.2) is untouched.
+        Each registered exclusive artifact's own floor for its next onset is
+        `max(art._earliest, round(art._next[0] * art.fs))`:
+
+        - `_earliest` (the earliest sample *it* could next place an event at) only ever
+          increases - each commit sets it to that event's end plus its gap, never earlier than
+          the onset just used, which was itself never before the previous `_earliest`.
+        - `_next`, once `advance_exclusive` has returned, is populated for every artifact with
+          `_rate_max > 0`: the loop's last iteration peeks every registered artifact's candidate
+          (via `_peek_onset`) before finding none is `< until` and stopping, so every such
+          artifact has a cached, not-yet-committed candidate at that point. That candidate can
+          only be committed at or after where it was peeked (`_consume_next` clamps to
+          `_earliest`, never earlier), or superseded by an even later one if thinned away, so its
+          onset is itself a safe floor.
+
+        Without the `_next` term, a peer that fires rarely (or whose only nonzero rate is for a
+        state this stream's timeline never visits) holds the watermark at its own long-past - or
+        permanently zero - `_earliest`, and pruning for the *whole* Occupancy stalls even though
+        every artifact's true next possible onset has long since moved on.
+
+        The smallest such floor among the artifacts that can still schedule at all (`_rate_max >
+        0`; a permanently silent artifact places no floor) is the watermark: a span that ends at
+        or before it is behind every future onset and can be forgotten - `next_free`'s collision
+        check needs `start < end`, and every future `start` is now `>= end`. This never changes
+        which onset gets accepted (chunk-invariance, DESIGN §8.2, is untouched), but it does
+        change what a *same-occupancy rebind* can safely assume - see `add_exclusive` - so every
+        owner whose span is dropped here is recorded in `_pruned_owners` forever, not just for
+        this call.
         """
         if not self._exclusive:
             return
-        floors = [art._earliest for art in self._exclusive if art._rate_max > 0.0]
+        floors: list[int] = []
+        for art in self._exclusive:
+            if art._rate_max <= 0.0:
+                continue
+            floor = art._earliest
+            if art._next is not None:
+                floor = max(floor, int(round(art._next[0] * art.fs)))
+            floors.append(floor)
         if not floors:
             return
         watermark = min(floors)
+        dropped_owners = {
+            owner
+            for span, owner in zip(self.spans, self._span_owners, strict=True)
+            if span[1] <= watermark
+        }
+        if not dropped_owners:
+            return
+        self._pruned_owners |= dropped_owners
         kept = [
             (span, owner)
             for span, owner in zip(self.spans, self._span_owners, strict=True)
             if span[1] > watermark
         ]
-        if len(kept) == len(self.spans):
-            return
         self.spans = [span for span, _ in kept]
         self._span_owners = [owner for _, owner in kept]
 
