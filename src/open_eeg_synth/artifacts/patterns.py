@@ -55,6 +55,11 @@ _FALLBACK = {
 # channel instead, and never divide by less than this either.
 _FALLBACK_FLOOR = 0.05
 
+# Two candidate anchors this close together count as equally near: which one distance ranks
+# first is then noise (electrode-position uncertainty is easily this large), so the tie is
+# broken by preferring the smaller model magnitude instead (see _nearest_scale).
+_TIE_TOLERANCE_M = 0.010
+
 
 def _nearest_scale(
     analytic: np.ndarray, empirical_out: np.ndarray, found: list[int], m: int, pos: np.ndarray
@@ -66,8 +71,17 @@ def _nearest_scale(
     the channels included so far all sit too close to the analytic model's null (DESIGN §5.5): a
     channel near a null carries almost no information about the fitted scale, and including one
     on its own would let a near-zero denominator blow the scale up.
+
+    Ties in "nearest" (within _TIE_TOLERANCE_M) are broken toward the smaller model magnitude:
+    two present channels can sit at nearly identical distance from a missing one, and which of
+    them distance ranks first is then a coin flip an electrode-position fit easily perturbs. If
+    that coin flip is between a modest, in-family anchor and a far stronger one that only ties on
+    distance by chance, picking the strong one can swing the fit wildly from one draw to the next
+    even though nothing meaningfully moved; preferring the smaller magnitude on a true tie keeps
+    the fit's sensitivity to position noise in line with everywhere else it is not exactly tied.
     """
-    order = sorted(found, key=lambda i: float(np.linalg.norm(pos[i] - pos[m])))
+    dist = {i: float(np.linalg.norm(pos[i] - pos[m])) for i in found}
+    order = sorted(found, key=lambda i: (round(dist[i] / _TIE_TOLERANCE_M), abs(analytic[i])))
     k = 1
     while k < min(3, len(order)) and abs(analytic[order[k - 1]]) < _FALLBACK_FLOOR:
         k += 1
@@ -121,8 +135,18 @@ def empirical(
         pos = np.asarray(electrode_pos, float)
         analytic = _FALLBACK[name](pos)
         if found:
+            # An anchor whose analytic sign disagrees with its own empirical sign is not just
+            # weak (the floor already handles that) but actively misleading: the dipole model
+            # gets the *direction* of the response wrong there, most often right at a near-null
+            # crossing where a tiny perturbation flips the model's sign but the real (measured)
+            # signal has already settled on a side. Fitting through such an anchor anyway drags
+            # a missing channel's scale toward whatever compromise fits a fundamentally wrong
+            # sign constraint, which is what made mirror-symmetric fallbacks (e.g. two ear
+            # channels) come out lopsided. Skip those anchors - widen past them - unless every
+            # candidate for this channel disagrees, in which case there is nothing better to use.
+            agree = [i for i in found if np.sign(analytic[i]) == np.sign(out[i])] or found
             for m in missing:
-                scale = _nearest_scale(analytic, out, found, m, pos)
+                scale = _nearest_scale(analytic, out, agree, m, pos)
                 out[m] = scale * analytic[m]
         else:
             out[missing] = analytic[missing]

@@ -84,6 +84,7 @@ class Occupancy:
 
     def __init__(self) -> None:
         self.spans: list[tuple[int, int]] = []
+        self._span_owners: list[object] = []  # parallel to spans; the artifact that added each
         self._exclusive: list[EventArtifact] = []
         self._advanced_to = 0
 
@@ -97,6 +98,10 @@ class Occupancy:
         own scheduler state was just reset by bind()); nothing here needs to change for it since
         `advance_exclusive` re-derives everything from each artifact's own current state, not
         from a shared watermark.
+
+        Deliberately does nothing else and raises before appending, so `EventArtifact.bind` can
+        call this first, before it changes any of its own or the (possible) old Occupancy's
+        state: a refused join must leave everything exactly as it was, not half-migrated.
         """
         if art in self._exclusive:
             return
@@ -112,6 +117,15 @@ class Occupancy:
         if art in self._exclusive:
             self._exclusive.remove(art)
 
+    def drop_spans_of(self, owner: object) -> None:
+        """Remove every span `owner` itself added: a same-occupancy rebind's own stale spans
+        must not linger and keep pushing that artifact's freshly-scheduled events around."""
+        kept = [
+            (s, o) for s, o in zip(self.spans, self._span_owners, strict=True) if o is not owner
+        ]
+        self.spans = [s for s, _ in kept]
+        self._span_owners = [o for _, o in kept]
+
     def next_free(self, start: int, length: int) -> int:
         moved = True
         while moved:
@@ -121,8 +135,9 @@ class Occupancy:
                     start, moved = b, True
         return start
 
-    def add(self, start: int, end: int) -> None:
+    def add(self, start: int, end: int, owner: object = None) -> None:
         self.spans.append((start, end))
+        self._span_owners.append(owner)
 
     def advance_exclusive(self, until: int) -> None:
         """Advance every exclusive artifact sharing this occupancy up to `until`, in onset order.
@@ -227,12 +242,18 @@ class EventArtifact(_ParamsMixin, ABC):
         events already scheduled or drawn against a previous context are discarded rather than
         leaking into the new one. Rebinding to a *different* Occupancy than before removes this
         artifact from the old one's exclusive list, so the old occupancy stops consulting a
-        context that no longer belongs to it. Rebinding to the *same* Occupancy as before (or
-        binding for the first time) is registered by `Occupancy.add_exclusive`, which allows a
-        rebind but rejects a genuinely new artifact joining an occupancy that has already
-        advanced.
+        context that no longer belongs to it. Rebinding to the *same* Occupancy as before also
+        drops this artifact's own previously-committed spans from it, so its freshly-scheduled
+        events are not pushed around by its own stale ones. Joining a *new* Occupancy (whether
+        binding for the first time or rebinding elsewhere) is validated by
+        `Occupancy.add_exclusive` *before* any of the above happens: it rejects a genuinely new
+        artifact joining an occupancy that has already advanced, and does so without mutating
+        anything, so a refused bind leaves this artifact exactly as it was - still bound to, and
+        working against, its previous context - rather than half-migrated.
         """
         old_occupancy = self.ctx.occupancy if hasattr(self, "ctx") else None
+        if self.exclusive:
+            ctx.occupancy.add_exclusive(self)  # validates (and may raise) before anything else
         self.ctx = ctx
         self.fs = ctx.fs
         self.n_ch = len(ctx.channels)
@@ -246,9 +267,10 @@ class EventArtifact(_ParamsMixin, ABC):
         self._earliest = 0
         self._rendered = 0
         if self.exclusive:
-            if old_occupancy is not None and old_occupancy is not ctx.occupancy:
+            if old_occupancy is ctx.occupancy:
+                ctx.occupancy.drop_spans_of(self)
+            elif old_occupancy is not None:
                 old_occupancy.remove_exclusive(self)
-            ctx.occupancy.add_exclusive(self)
 
     @abstractmethod
     def make_event(self, onset: int) -> Event: ...
@@ -265,6 +287,23 @@ class EventArtifact(_ParamsMixin, ABC):
         t_s, _accept = self._next
         onset = int(round(t_s * self.fs))
         return onset if onset < until else None
+
+    def _build(self, onset: int) -> Event:
+        """Call make_event and enforce its contract: the Event it returns must start exactly at
+        the onset it was given. Without this, a plug-in whose Event starts before (or after) its
+        onset can make the exclusive rebuild loop below spin forever: `next_free` is asked about
+        a span that does not start where the scheduler thinks it does, can report it as still
+        colliding after a "move", and the plug-in rebuilds an equally-offset Event at the new
+        onset forever.
+        """
+        ev = self.make_event(onset)
+        if ev.onset != onset:
+            raise ValueError(
+                f"{self.kind!r} plug-in's make_event(onset={onset}) returned an Event starting "
+                f"at {ev.onset}; make_event must return an Event whose onset equals the onset "
+                "it was given"
+            )
+        return ev
 
     def _consume_next(self) -> None:
         """Commit the currently peeked candidate: reject it, or build and place its Event.
@@ -284,14 +323,14 @@ class EventArtifact(_ParamsMixin, ABC):
         if not accept:
             return
         onset = max(onset, self._earliest)
-        ev = self.make_event(onset)
+        ev = self._build(onset)
         if self.exclusive:
             while True:
                 moved = self.ctx.occupancy.next_free(ev.onset, ev.block.shape[1])
                 if moved == ev.onset:
                     break
-                ev = self.make_event(moved)
-            self.ctx.occupancy.add(ev.onset, ev.end)
+                ev = self._build(moved)
+            self.ctx.occupancy.add(ev.onset, ev.end, owner=self)
         self._pending.append(ev)
         self._truth.append(ev.truth)
         self._truth_onset.append(ev.onset)
