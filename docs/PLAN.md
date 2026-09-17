@@ -6,7 +6,7 @@
 
 **Architecture:** One `Engine.render(t0, n)` path sums named layers (brain, artifact:*, sensor, transform:*). Whole recordings are rendered through it in blocks; streams call it chunk by chunk. Every random draw comes from a named stream derived from one case seed; every filter carries state, so chunking never changes samples. Data files (head model, eye patterns) are exported once by dev-only MNE scripts and shipped in the wheel.
 
-**Tech Stack:** Python 3.10–3.12, numpy, scipy (`lfilter`, `resample_poly`), optional `edfio`; dev extras MNE + mne-connectivity; Hatchling; pytest + ruff; GitHub Actions.
+**Tech Stack:** Python 3.10–3.12, numpy, scipy (`lfilter`, `resample_poly`), optional `edfio`; dev extras MNE (`>=1.6,<1.14`) + mne-connectivity; Hatchling; pytest + ruff; GitHub Actions.
 
 **Spec:** `docs/DESIGN.md` (read it first; section numbers below refer to it).
 
@@ -19,11 +19,12 @@
 - MNE and mne-connectivity are development extras only, imported only in `scripts/` and `tests/realism/`. Nothing under `src/` may import MNE.
 - No consumer code is imported anywhere (no Coherence Workstation, no Coherence Recorder modules).
 - Signals are float32 microvolts, shape `(n_channels, n_samples)`; positions are metres; `_s` suffix = seconds; `t0`/`n` = samples.
-- Every random draw goes through `open_eeg_synth.seeds.stream_rng`/`stream_seed` (DESIGN §8.1); noise is drawn time-major (`rng.standard_normal((n, k)).T`).
+- Every random draw goes through `open_eeg_synth.seeds.stream_rng`/`stream_seed`, and the stream names are exactly the ones DESIGN §8.1 lists (`subject:head`, `<condition>:background`, `<condition>:rhythm:<name>`, …); noise is drawn time-major (`rng.standard_normal((n, k)).T`).
 - Chunk invariance (DESIGN §8.2) is a tested property of every layer and of the engine.
 - Every file the package writes says "synthetic" (EDF patient code, truth `label`).
 - Public documents and code contain no private data: no clinic paths, no subject codes, no consumer-internal identifiers.
-- `ruff check .` and `ruff format --check .` clean; `pytest` (fast set) green before every commit.
+- `ruff check .` and `ruff format --check .` clean; `pytest` (fast set) green before every commit. Every task's "verify they pass" step runs both ruff commands after pytest; the repo's ruff configuration (rules `E,F,W,I,B,UP`, line length 100, `ruff>=0.6`) and its CI workflow versions are kept as they are.
+- The code blocks below are not pre-formatted: run `ruff format .` before the green step and wrap any docstring or signature longer than 100 characters.
 - Line length 100 (ruff), `from __future__ import annotations` at the top of every module.
 
 ## Milestones and parallelism
@@ -31,12 +32,14 @@
 | milestone | tasks | may run in parallel |
 |---|---|---|
 | M1 head-model export + engine skeleton | 1–6 | after Task 1: Tasks 2, 5, 6 in parallel; 3 after 2; 4 after 3 |
-| M2 brain layer | 7–12 | Tasks 7, 8, 9 in parallel after M1; 10 after 9; 11 after 7–10; 12 after 11 |
-| M3 artifact framework + blink + eye movement + jaw EMG | 13–20 | 13 first; 14 and 15 in parallel; 16, 17, 18, 19 in parallel after 14; 20 last |
+| M2 brain layer | 7–12 | Tasks 7, 8, 9 in parallel after M1; 10 after 9; 11 after 7–10; 12 after 11 **and after Task 13** (the artifact contract exists before the case builder uses it) |
+| M3 artifact framework + blink + eye movement + jaw EMG | 13–20 | 13 right after Tasks 3 and 9 (before Task 12); 14 in parallel with 13; 15 after 14; 16, 17, 18, 19 in parallel after 12, 14, 15; 20 last |
 | M4 state timeline + plants | 21–23 | may start after M2 (in parallel with M3); 23 after 20 and 22 |
 | M5 case files + sealed truth | 24–26 | 24 after Task 6; 25 after 23; 26 after 24, 25 |
 | M6 streaming + recorder switch-over | 27–29 | 27 after Task 6; 28 after 20; 29 (recorder repo) after the v0.2.0 tag |
-| M7 realism suite + CI + release | 30–35 | 30, 31 may start after Task 6 (MNE only); 32 after 12; 33 anytime; 34 after 20; 35 last |
+| M7 CI + realism suite + release | 30–35 | 33 first (before any realism task: it sets the per-file ruff ignores `tests/realism/` needs), 34 after 20; then 30, 31 (MNE only); 32 after 12 and 31; 35 last |
+
+Review-unit order (one implementer + one review per unit): U1 {1} → U2 {2,3,4} → U3 {5,6} → U4 {7,8,9} → U5 {10,11} → U6 {13,14} → U7 {12} → U8 {15} → U9 {16,17,18,19} → U10 {20} → U11 {21,22,23} → U12 {24,25,26} → U13 {27,28} → U14 {33,34} → U15 {30,31,32} → U16 {35 minus tag/release}.
 
 ## File map (what each new file is responsible for)
 
@@ -65,7 +68,8 @@ src/open_eeg_synth/recipes.py            resting_brain, ordinary_artifacts, rest
 src/open_eeg_synth/heart.py              HeartSource
 src/open_eeg_synth/stream.py             StreamSource
 src/open_eeg_synth/markers.py            re-export of classic MarkerSchedule
-src/open_eeg_synth/casefile/{edf,truth,writer}.py
+src/open_eeg_synth/casefile/{edf,truth,writer}.py   (writer re-exports render_layers)
+tests/golden/resting_seed20260916.json   signal fingerprint (Task 34)
 src/open_eeg_synth/__main__.py           make-case CLI
 scripts/export_head_model.py, scripts/derive_artifact_patterns.py, scripts/build_realism_reference.py, scripts/update_golden.py
 tests/helpers.py                         numpy Welch, band power, slope, chunked-vs-whole helper
@@ -82,14 +86,14 @@ tests/realism/{measure.py,test_realism.py,reference/}
 - Modify: `pyproject.toml` (add scipy, extras, pytest markers)
 - Create: `src/open_eeg_synth/channels.py`
 - Create: `src/open_eeg_synth/seeds.py`
-- Create (if absent): `src/open_eeg_synth/version.py`
+- Rename: `src/open_eeg_synth/_version.py` → `src/open_eeg_synth/version.py` (add `SIGNAL_VERSION`); update `[tool.hatch.version] path` and the import in `src/open_eeg_synth/__init__.py`
 - Create: `tests/test_channels.py`, `tests/test_seeds.py`
 
 **Interfaces:**
 - Consumes: nothing.
 - Produces: `CHANNELS_19`, `MIRROR`, `MIDLINE`, `HEART_LABELS`, `UnknownChannelError`, `canonical_label(label, known=CHANNELS_19) -> str`, `is_heart_label(label) -> bool`; `stream_seed(case_seed, name) -> SeedSequence`, `stream_rng(case_seed, name) -> Generator`, `fresh_case_seed() -> int`; `__version__`, `SIGNAL_VERSION`.
 
-- [ ] **Step 1: Reconcile with the existing skeleton.** Run `ls src/open_eeg_synth src/open_eeg_synth/classic tests` and note the classic module names (`synth.py`, `mock_rr.py`, `oddball.py`, `impedance.py` are assumed below; if they differ, use the real names in Tasks 28 and 29). Confirm `version.py` exists; if it defines `__version__` only, add `SIGNAL_VERSION`.
+- [ ] **Step 1: Reconcile with the existing skeleton.** Run `ls src/open_eeg_synth src/open_eeg_synth/classic tests`. The classic subpackage is `synth.py` (`RealisticEEGSynthesizer`, `MarkerSchedule`), `cardio.py` (`MockRRSource`, `MockEcgSource`, `MockAccSource`) and `oddball.py` (`OddballParadigm`, `schedule`, `ErpInjector`); its tests live in `tests/classic/` with the golden fixture in `tests/data/`. The version module is `_version.py`: `git mv` it to `version.py` (DESIGN §2.2), point `[tool.hatch.version] path` at the new name, fix the import in `__init__.py`, and add `SIGNAL_VERSION`.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -237,7 +241,7 @@ def fresh_case_seed() -> int:
 ```
 
 ```python
-# src/open_eeg_synth/version.py  (add if missing)
+# src/open_eeg_synth/version.py  (renamed from _version.py)
 __version__ = "0.2.0.dev0"
 SIGNAL_VERSION = 2  # bump whenever the same seed would produce different samples (DESIGN §8.3)
 ```
@@ -250,12 +254,16 @@ dependencies = ["numpy>=1.24", "scipy>=1.10"]
 
 [project.optional-dependencies]
 edf = ["edfio>=0.4"]
-realism = ["mne>=1.6,<2", "mne-connectivity>=0.6"]
-dev = ["pytest>=7.0", "ruff>=0.4", "edfio>=0.4", "mne>=1.6,<2", "mne-connectivity>=0.6"]
+# mne < 1.14: the `standard_1020` montage name the scripts and the realism suite use is removed in 1.14
+realism = ["mne>=1.6,<1.14", "mne-connectivity>=0.6"]
+dev = ["pytest>=7.0", "ruff>=0.6", "edfio>=0.4", "mne>=1.6,<1.14", "mne-connectivity>=0.6"]
+
+[tool.hatch.version]
+path = "src/open_eeg_synth/version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not realism and not slow'"
+addopts = "-ra -m 'not realism and not slow'"
 markers = [
   "realism: compares the resting recipe with public reference EEG; needs mne (run: pytest -m realism)",
   "slow: takes more than ~10 s",
@@ -264,13 +272,13 @@ markers = [
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `pip install -e ".[dev]" && pytest tests/test_channels.py tests/test_seeds.py -v && pytest -q`
+Run: `pip install -e ".[dev]" && pytest tests/test_channels.py tests/test_seeds.py -v && pytest -q && ruff check . && ruff format --check .`
 Expected: all PASS, including the pre-existing classic golden test.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add pyproject.toml src/open_eeg_synth/channels.py src/open_eeg_synth/seeds.py src/open_eeg_synth/version.py tests/test_channels.py tests/test_seeds.py
+git add -A pyproject.toml src/open_eeg_synth tests/test_channels.py tests/test_seeds.py   # -A stages the _version.py -> version.py rename
 git commit -m "feat: channel constants, named seed streams, scipy runtime dep"
 ```
 
@@ -284,6 +292,7 @@ git commit -m "feat: channel constants, named seed streams, scipy runtime dep"
 - Create: `src/open_eeg_synth/headmodel/data/NOTICE-colin27.txt`
 - Create (generated): `src/open_eeg_synth/headmodel/data/colin27_19ch.npz`
 - Create: `tests/test_headmodel_file.py`
+- Modify: `pyproject.toml` (`[tool.hatch.build.targets.sdist] include` gains `"scripts"` beside `"tools"`)
 
 **Interfaces:**
 - Consumes: a 19-channel MNE forward solution file supplied by the developer (`--forward <path>`; the consuming QEEG application's `forward_19ch.fif`, computed from the Colin27 template). MNE must be installed (`pip install -e ".[dev]"`).
@@ -403,8 +412,16 @@ def main() -> None:
         fwd, surf_ori=True, force_fixed=True, use_cps=True, verbose=False
     )
     nn = np.asarray(fixed["source_nn"], dtype=np.float64)
+    rr = np.asarray(fwd["source_rr"], dtype=np.float64)
+    # A few sources carry no cortical-patch normal (a zero vector, so their fixed gain is zero).
+    # Give them the outward radial direction so every normal is a unit vector (DESIGN §3.1).
+    undefined = np.linalg.norm(nn, axis=1) < 1e-6
+    if undefined.any():
+        radial = rr[undefined] - rr.mean(axis=0)
+        nn[undefined] = radial / np.linalg.norm(radial, axis=1, keepdims=True)
     derived = np.einsum("csk,sk->cs", gain_free, nn)
-    err = np.abs(derived - fixed["sol"]["data"]).max() / np.abs(fixed["sol"]["data"]).max()
+    err = (np.abs(derived - fixed["sol"]["data"])[:, ~undefined].max()
+           / np.abs(fixed["sol"]["data"]).max())
     if err > 1e-5:
         raise SystemExit(f"fixed gain != free gain . normal (relative error {err:.2e})")
 
@@ -416,14 +433,15 @@ def main() -> None:
     attribution = (
         notice.rstrip()
         + f"\n\nExported by scripts/export_head_model.py from {Path(args.forward).name} "
-        f"with MNE {mne.__version__} on {dt.date.today().isoformat()}."
+        f"with MNE {mne.__version__} on {dt.date.today().isoformat()}. {int(undefined.sum())} of "
+        f"{n_src} sources had no cortical-patch normal and were given the outward radial direction."
     )
     out = DATA / f"{args.name}.npz"
     np.savez_compressed(
         out,
         channel_names=np.array(ch),
         electrode_pos=elec.astype(np.float32),
-        source_pos=np.asarray(fwd["source_rr"], np.float32),
+        source_pos=rr.astype(np.float32),
         source_normal=nn.astype(np.float32),
         gain_free=gain_free.astype(np.float32),
         hemisphere=hemi,
@@ -440,13 +458,13 @@ if __name__ == "__main__":
 
 - [ ] **Step 5: Run the export, then the tests**
 
-Run: `python scripts/export_head_model.py --forward <path to the 19-channel forward .fif> && pytest tests/test_headmodel_file.py -v`
-Expected: script prints ~1.1 MB, 19 channels, 4871 sources; tests PASS. Check `ls -la src/open_eeg_synth/headmodel/data/` shows the `.npz` (~1.1 MB) and the notice.
+Run: `python scripts/export_head_model.py --forward <path to the 19-channel forward .fif> && pytest tests/test_headmodel_file.py -v && ruff check . && ruff format --check .`
+Expected: script prints ~1.1 MB, 19 channels, 4871 sources; tests PASS (the forward solution has 3 sources without a patch normal; the attribution string says so). Check `ls -la src/open_eeg_synth/headmodel/data/` shows the `.npz` (~1.1 MB) and the notice.
 
 - [ ] **Step 6: Commit** (the `.npz` is committed; it is package data, not a build product)
 
 ```bash
-git add scripts/export_head_model.py src/open_eeg_synth/headmodel tests/test_headmodel_file.py
+git add pyproject.toml scripts/export_head_model.py src/open_eeg_synth/headmodel tests/test_headmodel_file.py
 git commit -m "feat(headmodel): export Colin27 19-channel lead field to a plain array file with notice"
 ```
 
@@ -630,7 +648,7 @@ def load_head_model(name: str = "colin27_19ch") -> HeadModel:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_headmodel.py tests/test_headmodel_file.py -v`
+Run: `pytest tests/test_headmodel.py tests/test_headmodel_file.py -v && ruff check . && ruff format --check .`
 Expected: PASS (the mixing test takes ~0.5 s).
 
 - [ ] **Step 5: Commit**
@@ -650,7 +668,7 @@ git commit -m "feat(headmodel): HeadModel loader, subsets, patch maps, smoothed 
 
 **Interfaces:**
 - Consumes: `HeadModel`, `_source_kernel_apply`.
-- Produces: `HeadModel.perturbed(rng, *, tilt_deg=8.0, gain_sd=0.06, blur_range=(0.03, 0.10), corr_mm=15.0) -> HeadModel` with `perturbation` dict `{"tilt_deg", "corr_mm", "median_tilt_deg", "channel_gain": [19 floats], "blur_eps"}`.
+- Produces: `HeadModel.perturbed(rng, *, tilt_deg=8.0, gain_sd=0.06, blur_range=(0.03, 0.10), corr_mm=15.0) -> HeadModel` with `perturbation` dict `{"tilt_deg", "corr_mm", "median_tilt_deg", "channel_gain": [n_ch floats], "blur_eps"}`. Works on any subset, including one channel (the scalp blur needs a neighbour; with one channel it is skipped and the draw is still consumed).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -686,6 +704,11 @@ def test_perturbed_normals_stay_unit_and_subset_commutes():
     assert np.allclose(np.linalg.norm(p.source_normal, axis=1), 1.0)
     sub = p.subset(["O1", "O2"])
     assert np.allclose(sub.gain[0], p.gain[head.index("O1")])
+
+
+def test_single_channel_subset_perturbs_without_nan():
+    p = load_head_model().subset(["Cz"]).perturbed(stream_rng(4, "subject:head"))
+    assert np.isfinite(p.gain).all() and p.gain.shape[0] == 1
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -718,11 +741,16 @@ Expected: FAIL with `AttributeError: 'HeadModel' object has no attribute 'pertur
         g = np.clip(1.0 + gain_sd * rng.standard_normal(self.n_channels), 0.85, 1.15)
         # 3. scalp blur
         eps = float(rng.uniform(*blur_range))
-        de = np.linalg.norm(self.electrode_pos[:, None, :] - self.electrode_pos[None, :, :], axis=2)
-        A = np.exp(-0.5 * (de * 1000.0 / 50.0) ** 2)
-        np.fill_diagonal(A, 0.0)
-        A /= A.sum(axis=1, keepdims=True)
-        T = g[:, None] * ((1.0 - eps) * np.eye(self.n_channels) + eps * A)
+        if self.n_channels > 1:
+            de = np.linalg.norm(
+                self.electrode_pos[:, None, :] - self.electrode_pos[None, :, :], axis=2
+            )
+            A = np.exp(-0.5 * (de * 1000.0 / 50.0) ** 2)
+            np.fill_diagonal(A, 0.0)
+            A /= A.sum(axis=1, keepdims=True)
+            T = g[:, None] * ((1.0 - eps) * np.eye(self.n_channels) + eps * A)
+        else:  # one channel has no neighbour to blur into; the draw is still consumed
+            T = g[:, None] * np.eye(1)
         gf = np.einsum("cd,dsk->csk", T, self.gain_free).astype(np.float32)
         record = {
             "tilt_deg": float(tilt_deg),
@@ -736,7 +764,7 @@ Expected: FAIL with `AttributeError: 'HeadModel' object has no attribute 'pertur
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_headmodel_perturb.py -v`
+Run: `pytest tests/test_headmodel_perturb.py -v && ruff check . && ruff format --check .`
 Expected: PASS. If `median_tilt_deg` falls outside 5–15°, adjust the scale in step 1 (`np.tan(np.deg2rad(tilt_deg))`) — the test pins the *outcome*, DESIGN §3.3 documents it.
 
 - [ ] **Step 5: Commit**
@@ -757,7 +785,7 @@ git commit -m "feat(headmodel): per-case perturbation (normal tilt, channel gain
 
 **Interfaces:**
 - Consumes: scipy.
-- Produces: `OU(n_series, fs, *, mu, sigma, tau_s, rng)` with `.step(white, mu=None)`; `PinkCascade(n_series, fs, *, beta=1.2, f_lo=0.03, n_per_decade=2.0)` with `.warm_up(rng, seconds)` and `.process(white)`; `lowpass_decimate(x, factor)`; `raised_cosine_envelope(n, fs, rise_s, fall_s)`. Test helpers: `welch(x, fs, nperseg)`, `band_power(x, fs, lo, hi)`, `psd_slope(x, fs)`, `render_whole_and_chunked(make_layer, n_total, rng)`.
+- Produces: `OU(n_series, fs, *, mu, sigma, tau_s, rng)` with `.step(white, mu=None)`; `PinkCascade(n_series, fs, *, beta=1.2, f_lo=0.03, n_per_decade=2.0)` with `.warm_up(rng, seconds)` and `.process(white)`; `lowpass_decimate(x, factor)`; `raised_cosine_envelope(n, fs, rise_s, fall_s)`. Test helpers: `welch(x, fs, nperseg)` (inputs shorter than `nperseg` become one segment, so per-second windows work), `band_power(x, fs, lo, hi)`, `psd_slope(x, fs)`, `render_whole_and_chunked(make_layer, n_total, rng)`.
 
 - [ ] **Step 1: Write the helpers and the failing tests**
 
@@ -773,6 +801,7 @@ import numpy as np
 def welch(x: np.ndarray, fs: float, nperseg: int) -> tuple[np.ndarray, np.ndarray]:
     """Hann-windowed Welch PSD along the last axis, 50 % overlap. Returns (f, psd)."""
     x = np.atleast_2d(x)
+    nperseg = int(min(nperseg, x.shape[-1]))  # a short input becomes one segment
     step = nperseg // 2
     win = np.hanning(nperseg)
     scale = 1.0 / (fs * (win**2).sum())
@@ -956,7 +985,7 @@ def raised_cosine_envelope(n: int, fs: float, rise_s: float, fall_s: float) -> n
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_dsp.py -v`
+Run: `pytest tests/test_dsp.py -v && ruff check . && ruff format --check .`
 Expected: PASS. Add an empty `tests/__init__.py` if `from tests.helpers import …` fails.
 
 - [ ] **Step 5: Commit**
@@ -977,7 +1006,7 @@ git commit -m "feat(dsp): streaming OU, 1/f cascade, anti-alias decimation, enve
 
 **Interfaces:**
 - Consumes: `seeds`.
-- Produces: `Layer` protocol (`name`, `render(t0, n)`, `truth()`), `Transform` protocol (`kind`, `render_transform(t0, n, mix)`, `truth()`), `Frame(t0, n, layers)` with `.mixed`, `Engine(channels, fs, layers, transforms=())` with `.render`, `.render_all(n_samples, block=4096)`, `.truth()`, `.position`; `Recording(fs, channels, layers, truth, plants=[], timeline=None)` with `.mixed`, `.duration_s`, `.n_samples`; `SensorNoise(n_ch, white_uv, seq)`.
+- Produces: `Layer` protocol (`name`, `render(t0, n)`, `truth()`), `Transform` protocol (`name`, `render_transform(t0, n, mix)`, `truth()`; the Engine keys the transform's layer by that `name`, e.g. `transform:dead_channel` or `transform:dead_channel#2`), `Frame(t0, n, layers)` with `.mixed`, `Engine(channels, fs, layers, transforms=())` with `.render`, `.render_all(n_samples, block=4096)`, `.truth()`, `.position`; `Recording(fs, channels, layers, truth, plants=[], timeline=None)` with `.mixed`, `.duration_s`, `.n_samples`; `SensorNoise(n_ch, white_uv, seq)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1009,7 +1038,7 @@ class Ramp:
 
 
 class Kill:
-    kind = "kill"
+    name = "transform:kill"
 
     def render_transform(self, t0, n, mix):
         d = np.zeros_like(mix)
@@ -1087,7 +1116,7 @@ class Layer(Protocol):
 
 @runtime_checkable
 class Transform(Protocol):
-    kind: str
+    name: str
 
     def render_transform(self, t0: int, n: int, mix: np.ndarray) -> np.ndarray: ...
 
@@ -1140,7 +1169,7 @@ class Engine:
         self.fs = float(fs)
         self.layers = list(layers)
         self.transforms = list(transforms)
-        names = [lay.name for lay in self.layers] + [f"transform:{t.kind}" for t in self.transforms]
+        names = [lay.name for lay in self.layers] + [t.name for t in self.transforms]
         if len(set(names)) != len(names):
             raise ValueError(f"duplicate layer names: {names}")
         self._pos = 0
@@ -1165,7 +1194,7 @@ class Engine:
             mix += block
         for tr in self.transforms:
             delta = np.asarray(tr.render_transform(t0, n, mix), dtype=np.float32)
-            out[f"transform:{tr.kind}"] = delta
+            out[tr.name] = delta
             mix += delta
         self._pos += n
         return Frame(t0, n, out)
@@ -1216,7 +1245,7 @@ class SensorNoise:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_engine.py -v`
+Run: `pytest tests/test_engine.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1333,7 +1362,7 @@ class Background:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_background.py -v`
+Run: `pytest tests/test_background.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1506,7 +1535,7 @@ class Network:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_network.py -v`
+Run: `pytest tests/test_network.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1526,7 +1555,7 @@ git commit -m "feat(brain): delayed cortical network with streaming node histori
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `StateSegment(t0_s, t1_s, state)`; `StateTimeline(segments, ramp_s=2.0)` with `.segments`, `.state_at(t_s)`, `.weights(t0, n, fs)`, `.gain(per_state, t0, n, fs, default=1.0)`, `.rate(per_state, t_s)`, `.to_dict()`, `StateTimeline.from_dict(d)`, `StateTimeline.constant(state, duration_s=inf)`. The last segment extends indefinitely.
+- Produces: `StateSegment(t0_s, t1_s, state)`; `StateTimeline(segments, ramp_s=2.0)` — a frozen dataclass that compares by value (two timelines with equal segments and ramp are `==`, which `CaseSpec` round-trip tests rely on) — with `.segments`, `.state_at(t_s)`, `.weights(t0, n, fs)`, `.gain(per_state, t0, n, fs, default=1.0)`, `.rate(per_state, t_s)`, `.to_dict()`, `StateTimeline.from_dict(d)`, `StateTimeline.constant(state, duration_s=inf)`. The last segment extends indefinitely.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1556,7 +1585,7 @@ def test_gain_rate_state_at_and_roundtrip():
     assert tl.state_at(4.99) == "eyes_open" and tl.state_at(5.0) == "eyes_closed"
     assert tl.rate({"eyes_open": 0.25}, 1.0) == 0.25 and tl.rate({"eyes_open": 0.25}, 6.0) == 0.0
     back = StateTimeline.from_dict(tl.to_dict())
-    assert back.segments == tl.segments and back.ramp_s == 0.0
+    assert back == tl and back.segments == tl.segments and back.ramp_s == 0.0
 
 
 def test_constant_and_validation():
@@ -1582,7 +1611,6 @@ Expected: FAIL with `ModuleNotFoundError`
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -1595,26 +1623,32 @@ class StateSegment:
     state: str
 
 
+@dataclass(frozen=True)
 class StateTimeline:
-    def __init__(self, segments: Sequence[StateSegment], ramp_s: float = 2.0) -> None:
-        segs = tuple(segments)
+    """Contiguous segments from 0 s; the last extends indefinitely. Compares by value."""
+
+    segments: tuple[StateSegment, ...]
+    ramp_s: float = 2.0
+
+    def __post_init__(self) -> None:
+        segs = tuple(self.segments)
         if not segs or segs[0].t0_s != 0.0:
             raise ValueError("timeline must start at 0 s")
-        for a, b in zip(segs, segs[1:]):
+        for a, b in zip(segs, segs[1:], strict=False):
             if b.t0_s != a.t1_s:
                 raise ValueError(f"segments must be contiguous: {a} -> {b}")
         if any(s.t1_s <= s.t0_s for s in segs):
             raise ValueError("every segment needs t1_s > t0_s")
-        self.segments = segs
-        self.ramp_s = float(ramp_s)
-        self._starts = np.array([s.t0_s for s in segs])
+        object.__setattr__(self, "segments", segs)
+        object.__setattr__(self, "ramp_s", float(self.ramp_s))
 
     @classmethod
     def constant(cls, state: str, duration_s: float = math.inf) -> StateTimeline:
-        return cls([StateSegment(0.0, duration_s, state)])
+        return cls((StateSegment(0.0, duration_s, state),))
 
     def state_at(self, t_s: float) -> str:
-        i = int(np.searchsorted(self._starts, t_s, side="right") - 1)
+        starts = [s.t0_s for s in self.segments]
+        i = int(np.searchsorted(starts, t_s, side="right") - 1)
         return self.segments[max(0, i)].state
 
     def weights(self, t0: int, n: int, fs: float) -> dict[str, np.ndarray]:
@@ -1659,7 +1693,7 @@ class StateTimeline:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_state.py -v`
+Run: `pytest tests/test_state.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1991,7 +2025,7 @@ class Rhythm:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `pytest tests/test_rhythm.py -v`
+Run: `pytest tests/test_rhythm.py -v && ruff check . && ruff format --check .`
 Expected: PASS. If `test_state_gain_and_burst_gate`'s burst count is off by one, check `_Gate` only: the first edge is at `off_s` seconds, then on for `on_s`.
 
 - [ ] **Step 6: Commit**
@@ -2012,7 +2046,7 @@ git commit -m "feat(brain): rhythm generator with mirrored patches, shared delay
 
 **Interfaces:**
 - Consumes: Tasks 7–10.
-- Produces: `BrainSpec(background, network, rhythms)` with `to_dict()/from_dict()`; `BrainLayer(rhythms, spec, head, fs, timeline, mixing, wiring, placements, f0_hz, seq)` layer (`name="brain"`) whose `.parts` are the sub-layers; `recipes.resting_brain() -> BrainSpec`.
+- Produces: `BrainSpec(background, network, rhythms)` with `to_dict()/from_dict()`; `BrainLayer(rhythms, spec, head, fs, timeline, mixing, wiring, placements, f0_hz, case_seed, condition, rows=None)` layer (`name="brain"`) whose `.parts` are the sub-layers, each seeded from the DESIGN §8.1 stream of that name (`<condition>:background`, `<condition>:network`, `<condition>:rhythm:<name>`); `head` is always the full model and `rows` (indices into it) selects the channels the case records, so a four-channel stream and a nineteen-channel case share one brain; `recipes.resting_brain() -> BrainSpec`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2027,7 +2061,7 @@ from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.headmodel import load_head_model
 from open_eeg_synth.recipes import resting_brain
-from open_eeg_synth.seeds import stream_rng, stream_seed
+from open_eeg_synth.seeds import stream_rng
 from tests.helpers import band_power, psd_slope, render_whole_and_chunked
 
 FS = 256.0
@@ -2046,7 +2080,7 @@ def _build(spec: BrainSpec, timeline, seed=1):
 
     def make():
         return BrainLayer(spec.rhythms, spec, head, FS, timeline, mixing, wiring, placements, f0,
-                          stream_seed(seed, "eyes_closed:brain"))
+                          seed, "eyes_closed")
 
     return make
 
@@ -2061,18 +2095,22 @@ def test_brain_layer_chunk_invariance_and_eyes_closed_alpha():
     make = _build(resting_brain(), StateTimeline.constant("eyes_closed"))
     whole, chunked = render_whole_and_chunked(make, int(60 * FS), np.random.default_rng(0))
     assert np.allclose(whole, chunked, atol=1e-3)
+    # Amplitudes are judged after average referencing, as DESIGN §9.1 measures them: the lead
+    # field's native reference carries a common component (DESIGN §2.3) that inflates raw RMS.
+    x = whole - whole.mean(axis=0, keepdims=True)
     o1, fz = CHANNELS_19.index("O1"), CHANNELS_19.index("Fz")
-    alpha = band_power(whole, FS, 8, 13)
-    total = band_power(whole, FS, 1, 40)
-    assert alpha[o1] / total[o1] > 0.35  # alpha share at O1, eyes closed (DESIGN §9.1)
+    alpha = band_power(x, FS, 8, 13)
+    total = band_power(x, FS, 1, 40)
+    assert alpha[o1] / total[o1] > 0.3  # provisional; Task 12 pins the calibrated value (~0.6)
     assert alpha[o1] > 1.5 * alpha[fz]
-    assert 0.9 < psd_slope(whole, FS) < 1.5
-    assert 8.0 < whole[CHANNELS_19.index("Cz")].std() < 20.0
+    assert 0.9 < psd_slope(x, FS) < 1.5
+    assert 6.0 < x[CHANNELS_19.index("Cz")].std() < 30.0  # provisional; Task 12 pins ~12 uV
 
 
 def test_eyes_open_collapses_alpha():
     ec = _build(resting_brain(), StateTimeline.constant("eyes_closed"))().render(0, int(30 * FS))
     eo = _build(resting_brain(), StateTimeline.constant("eyes_open"))().render(0, int(30 * FS))
+    ec, eo = ec - ec.mean(axis=0, keepdims=True), eo - eo.mean(axis=0, keepdims=True)
     o1 = CHANNELS_19.index("O1")
     assert band_power(eo, FS, 8, 13)[o1] < 0.5 * band_power(ec, FS, 8, 13)[o1]
 ```
@@ -2100,6 +2138,7 @@ from open_eeg_synth.brain.network import Network, NetworkSpec, NetworkWiring
 from open_eeg_synth.brain.rhythm import Rhythm, RhythmSpec
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.headmodel import HeadModel
+from open_eeg_synth.seeds import stream_seed
 
 
 @dataclass(frozen=True)
@@ -2119,25 +2158,30 @@ class BrainSpec:
 
 
 class BrainLayer:
+    """Background + network + rhythms on the full head; ``rows`` selects the recorded channels."""
+
     name = "brain"
 
     def __init__(self, rhythms: Sequence[RhythmSpec], spec: BrainSpec, head: HeadModel, fs: float,
                  timeline: StateTimeline, mixing: np.ndarray, wiring: NetworkWiring,
-                 placements: dict[str, list[int]], f0_hz: dict[str, float],
-                 seq: np.random.SeedSequence) -> None:
-        children = seq.spawn(2 + len(rhythms))
+                 placements: dict[str, list[int]], f0_hz: dict[str, float], case_seed: int,
+                 condition: str, rows: Sequence[int] | None = None) -> None:
+        self.rows = None if rows is None else list(rows)
         self.parts: list = [
-            Background(head, fs, spec.background, children[0], mixing=mixing),
-            Network(head, fs, spec.network, spec.background, wiring, children[1]),
+            Background(head, fs, spec.background,
+                       stream_seed(case_seed, f"{condition}:background"), mixing=mixing),
+            Network(head, fs, spec.network, spec.background, wiring,
+                    stream_seed(case_seed, f"{condition}:network")),
         ]
-        for r, child in zip(rhythms, children[2:]):
-            self.parts.append(Rhythm(head, fs, r, timeline, placements[r.name], f0_hz[r.name], child))
+        for r in rhythms:
+            self.parts.append(Rhythm(head, fs, r, timeline, placements[r.name], f0_hz[r.name],
+                                     stream_seed(case_seed, f"{condition}:rhythm:{r.name}")))
 
     def render(self, t0: int, n: int) -> np.ndarray:
         out = self.parts[0].render(t0, n).astype(np.float32)
         for p in self.parts[1:]:
             out += p.render(t0, n)
-        return out
+        return out if self.rows is None else out[self.rows]
 
     def truth(self) -> list:
         return []
@@ -2178,8 +2222,8 @@ def resting_brain() -> BrainSpec:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_brain_layer.py -v`
-Expected: PASS. If the alpha-share assertion fails, the analytic amplitude convention is landing below the feasibility test's empirical one (DESIGN §4.3, §11.6): raise the alpha `amp_uv` in `resting_brain` until `alpha share at O1 (EC) ≈ 0.6` and Cz RMS ≈ 12 µV, and record the value you settled on in the commit message.
+Run: `pytest tests/test_brain_layer.py -v && ruff check . && ruff format --check .`
+Expected: PASS. The two amplitude bands are deliberately loose: with the recipe as written the average-referenced brain layer gives Cz RMS ≈ 21 µV and an O1 alpha share ≈ 0.35 (the analytic amplitude convention lands below the feasibility test's empirical one, DESIGN §4.3, §11.6). Task 12 Step 5 calibrates the recipe and then tightens these two assertions.
 
 - [ ] **Step 5: Commit**
 
@@ -2199,8 +2243,8 @@ git commit -m "feat(brain): BrainLayer composition and the tuned resting recipe"
 - Create: `tests/test_case.py`, `tests/test_perf.py`
 
 **Interfaces:**
-- Consumes: Tasks 3–11.
-- Produces: `SensorSpec(white_uv=1.5)`; `ArtifactSpec(kind, params={})`; `ConditionSpec(name, duration_s, timeline)`; `CaseSpec(...)` per DESIGN §7.2 with `to_dict()`, `from_dict()`, `digest()`; `compiled_rhythms(spec) -> tuple[RhythmSpec, ...]` (base rhythms only until Task 21); `Subject(head, mixing, placements, f0_hz, network, pattern_jitter)` with `to_dict()`; `make_subject(spec)`, `make_engine(spec, subject, condition)`, `make_case(spec) -> Case(spec, case_id, subject, recordings)`; `recipes.resting_case(seed, *, duration_s=240.0, plants=(), artifacts=None, drowsy_from_s=None, fs=256.0, channels=CHANNELS_19)`.
+- Consumes: Tasks 3–11 and Task 13 (`RenderContext`, `Occupancy`, `make_artifact` — Task 13 runs before this task).
+- Produces: `SensorSpec(white_uv=1.5)`; `ArtifactSpec(kind, params={})`; `ConditionSpec(name, duration_s, timeline)`; `CaseSpec(...)` per DESIGN §7.2 with `to_dict()`, `from_dict()`, `digest()`; `compiled_rhythms(spec) -> tuple[RhythmSpec, ...]` (base rhythms only until Task 21); `Subject(head, mixing, placements, f0_hz, network, pattern_jitter, rows)` with `to_dict()` — `head` is the full (perturbed) model and `rows` the indices of `spec.channels` in it; `make_subject(spec)`, `make_engine(spec, subject, condition)`, `make_case(spec) -> Case(spec, case_id, subject, recordings)`; `recipes.resting_case(seed, *, duration_s=240.0, plants=(), artifacts=None, drowsy_from_s=None, fs=256.0, channels=CHANNELS_19)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2295,6 +2339,8 @@ from open_eeg_synth.engine import Engine, Recording
 from open_eeg_synth.headmodel import HeadModel, load_head_model
 from open_eeg_synth.seeds import stream_rng, stream_seed
 from open_eeg_synth.sensor import SensorNoise
+
+import open_eeg_synth.artifacts  # noqa: F401  (registers the built-in artifact kinds on import)
 
 
 @dataclass(frozen=True)
@@ -2393,6 +2439,7 @@ class Subject:
     f0_hz: dict[str, float]
     network: NetworkWiring
     pattern_jitter: dict[str, float]
+    rows: list[int]  # rows of ``head`` that the case records, in CaseSpec.channels order
 
     def to_dict(self) -> dict:
         return {"head_perturbation": self.head.perturbation, "placements": self.placements,
@@ -2401,9 +2448,16 @@ class Subject:
 
 
 def make_subject(spec: CaseSpec) -> Subject:
-    head = load_head_model(spec.head_model).subset(spec.channels)
+    """Everything drawn once per subject, on the FULL head model (DESIGN §7.2).
+
+    Patches are placed under every 10-20 site whether or not the case records it, so a
+    four-channel stream and a nineteen-channel case of the same seed share one brain; the
+    recorded channels are selected by ``rows`` when the brain layer renders.
+    """
+    head = load_head_model(spec.head_model)
     if spec.perturb_head:
         head = head.perturbed(stream_rng(spec.seed, "subject:head"))
+    rows = [head.index(c) for c in spec.channels]
     mixing = head.smoothed_mixing(spec.brain.background.smoothing_mm)
     placements, f0 = {}, {}
     for r in compiled_rhythms(spec):
@@ -2414,17 +2468,18 @@ def make_subject(spec: CaseSpec) -> Subject:
     wiring = wire_network(head, spec.brain.network, spec.fs, stream_rng(spec.seed, "subject:network"))
     jitter = {k: float(stream_rng(spec.seed, f"subject:artifact:{k}").normal(0.0, 0.6))
               for k in sorted({a.kind for a in spec.artifacts})}
-    return Subject(head, mixing, placements, f0, wiring, jitter)
+    return Subject(head, mixing, placements, f0, wiring, jitter, rows)
 
 
 def make_engine(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Engine:
     from open_eeg_synth.artifacts.base import Occupancy, RenderContext
     from open_eeg_synth.artifacts.registry import make_artifact
 
-    head, fs, seed = subject.head, spec.fs, spec.seed
-    layers: list = [BrainLayer(compiled_rhythms(spec), spec.brain, head, fs, condition.timeline,
+    full, fs, seed = subject.head, spec.fs, spec.seed
+    head = full.subset(spec.channels)  # what the amplifier records; artifacts live here
+    layers: list = [BrainLayer(compiled_rhythms(spec), spec.brain, full, fs, condition.timeline,
                                subject.mixing, subject.network, subject.placements, subject.f0_hz,
-                               stream_seed(seed, f"{condition.name}:brain"))]
+                               seed, condition.name, rows=subject.rows)]
     transforms: list = []
     counts = Counter(a.kind for a in spec.artifacts)
     seen: Counter = Counter()
@@ -2471,8 +2526,6 @@ def make_case(spec: CaseSpec) -> Case:
         recordings[cond.name] = rec
     return Case(spec, case_id_for(spec), subject, recordings)
 ```
-
-Until Task 13 exists, `make_engine` must not import the artifacts package when `spec.artifacts` is empty: move the two artifact imports inside the `for` loop body (they are executed only when there is an artifact). Task 20 moves them back to the top of the function.
 
 ```python
 # src/open_eeg_synth/recipes.py  (append)
@@ -2527,7 +2580,7 @@ def apply_modifiers(rhythms, modifiers):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_case.py -v && pytest -m slow tests/test_perf.py -v`
+Run: `pytest tests/test_case.py -v && pytest -m slow tests/test_perf.py -v && ruff check . && ruff format --check .`
 Expected: PASS; the perf test prints under 15 s (aim for 6 s — if it is slower, profile with `python -X importtime` / `cProfile` and look first at `smoothed_mixing` being called more than once per subject and at `Rhythm.render`'s Python loop over patches).
 
 - [ ] **Step 5: Calibrate the amplitudes against the feasibility test's numbers.** Run this snippet and compare with DESIGN §9.1 (targets: Cz RMS ≈ 12 µV both conditions, alpha share O1 ≈ 0.6 EC / 0.2 EO, Fz ≈ 0.4 EC / 0.14 EO, exponent ≈ 1.2):
@@ -2548,7 +2601,7 @@ for cond in ("eyes_closed", "eyes_open"):
     print(cond, np.round(np.median(vals, axis=0), 3), "  [Cz rms, alpha share O1, alpha share Fz, exponent]")
 ```
 
-Adjust `amp_uv` for alpha/theta/beta/smr and `rms_uv` in `recipes.resting_brain` until the medians are within 15 % of the targets. Commit the values.
+Adjust `amp_uv` for alpha/theta/beta/smr and `rms_uv` in `recipes.resting_brain` until the medians are within 15 % of the targets. Starting point, measured with the recipe as written: eyes closed `[21.4, 0.348, 0.145, 1.254]`, eyes open `[21.7, 0.135, 0.105, 1.247]` — the background is about twice too loud and alpha two to three times too quiet, so expect `rms_uv` ≈ 10 and alpha/theta `amp_uv` two to three times their listed values (a real two-knob retune, not a nudge). Then pin `tests/test_brain_layer.py`: Cz RMS band to ±30 % around the calibrated value and the O1 alpha-share floor to 0.45. Commit the values.
 
 - [ ] **Step 6: Commit**
 
@@ -2557,13 +2610,13 @@ git add src/open_eeg_synth/case.py src/open_eeg_synth/recipes.py src/open_eeg_sy
 git commit -m "feat(case): CaseSpec/Subject/make_case with shared subject across conditions; resting recipe calibrated"
 ```
 
-**M2 acceptance:** `pytest -q` green; the calibration snippet's medians within 15 % of the targets; `pytest -m slow tests/test_perf.py` under 15 s.
+**M2 acceptance:** `pytest -q` green; the calibration snippet's medians within 15 % of the targets and `test_brain_layer.py` pinned to them; `pytest -m slow tests/test_perf.py` under 15 s (the whole two-condition case renders in about a second on a 2020 laptop).
 
 ---
 
 # M3 — artifact framework + blink + eye movement + jaw EMG
 
-### Task 13: Artifact contract, event scheduling, registry
+### Task 13: Artifact contract, event scheduling, registry (runs before Task 12)
 
 **Files:**
 - Create: `src/open_eeg_synth/artifacts/__init__.py`
@@ -2573,7 +2626,7 @@ git commit -m "feat(case): CaseSpec/Subject/make_case with shared subject across
 
 **Interfaces:**
 - Consumes: `StateTimeline`, `HeadModel`.
-- Produces: `Remedy` enum; `TruthRecord` (+ `to_dict()`); `Occupancy`; `RenderContext(channels, fs, electrode_pos, head, timeline, rng, subject_rng, occupancy, layer_name)`; `Event(onset, block, truth)` with `.end`, `Event.from_pattern(onset, pattern, waveform, truth)`; `EventArtifact(rate_by_state, min_gap_s, exclusive=False)` with `kind`, `mode="additive"`, `name`, `bind`, `render`, `truth`, `params`, abstract `make_event(onset)`; `TransformArtifact` with `mode="transform"`, `render_transform`; `register`, `ARTIFACTS`, `make_artifact`, `discover`.
+- Produces: `Remedy` enum; `TruthRecord` (+ `to_dict()`); `Occupancy`; `RenderContext(channels, fs, electrode_pos, head, timeline, rng, subject_rng, occupancy, layer_name)`; `Event(onset, block, truth)` with `.end`, `Event.from_pattern(onset, pattern, waveform, truth)`; `EventArtifact(rate_by_state, min_gap_s, exclusive=False)` with `kind`, `mode="additive"`, `name`, `bind`, `render`, `truth`, `params`, abstract `make_event(onset)` — scheduling is the thinned Poisson process of DESIGN §5.2 (candidates at the maximum rate, accepted with probability `rate(state)/rate_max`, an accepted onset inside the previous event's refractory gap is pushed to the end of the gap, never dropped; the nominal rate holds while `rate × (duration + gap)` stays well below one), and `truth()` lists the events whose onset falls inside the rendered span; `TransformArtifact` with `mode="transform"`, `name`, `render_transform`; `register`, `ARTIFACTS`, `make_artifact`, `discover`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2626,13 +2679,13 @@ def test_registry_and_params():
 
 def test_rate_follows_state_and_events_carry_truth():
     tl = StateTimeline([StateSegment(0, 30, "eyes_open"), StateSegment(30, 60, "eyes_closed")], 0.0)
-    art = Pulse()
+    art = Pulse(rate_by_state={"eyes_open": 1.0}, length_s=0.1)
     art.bind(_ctx(tl))
     x = art.render(0, int(60 * FS))
     truth = art.truth()
     onsets = np.array([t.onset_s for t in truth])
-    assert 30 <= (onsets < 30).sum() <= 90  # ~2/s for 30 s
-    assert (onsets >= 30).sum() == 0
+    assert 18 <= (onsets < 30).sum() <= 45  # Poisson(30) for 30 s at 1/s; events rarely pushed
+    assert (onsets >= 30.5).sum() == 0  # none in the eyes-closed half (a push moves one < 0.1 s)
     assert x.shape == (3, 6000) and x[2].max() == 0.0 and x[1].max() <= 0.5 * x[0].max()
     assert all(t.layer == "artifact:test_pulse" and t.remedies == (Remedy.MASK_SEGMENT,) for t in truth)
     assert truth[0].to_dict()["remedies"] == ["mask-segment"]
@@ -2640,15 +2693,15 @@ def test_rate_follows_state_and_events_carry_truth():
 
 def test_min_gap_and_exclusive_occupancy():
     tl = StateTimeline.constant("eyes_open")
-    art = Pulse(rate_by_state={"eyes_open": 5.0}, min_gap_s=1.0, length_s=0.5)
+    art = Pulse(rate_by_state={"eyes_open": 0.5}, min_gap_s=1.0, length_s=0.5)
     art.bind(_ctx(tl))
     art.render(0, int(60 * FS))
     on = np.array([t.onset_s for t in art.truth()])
     assert np.all(np.diff(on) >= 1.5 - 1e-9)  # length + gap
 
     occ = Occupancy()
-    a = Pulse(rate_by_state={"eyes_open": 3.0}, exclusive=True, length_s=1.0)
-    b = Pulse(rate_by_state={"eyes_open": 3.0}, exclusive=True, length_s=1.0)
+    a = Pulse(rate_by_state={"eyes_open": 0.4}, exclusive=True, length_s=1.0)
+    b = Pulse(rate_by_state={"eyes_open": 0.4}, exclusive=True, length_s=1.0)
     a.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:test_pulse#1"))
     b.bind(_ctx(tl, seed=2, occupancy=occ, name="artifact:test_pulse#2"))
     for t0 in range(0, 6000, 500):
@@ -2816,6 +2869,7 @@ class EventArtifact(_ParamsMixin, ABC):
         self._cand_s = 0.0
         self._next: tuple[float, bool] | None = None
         self._earliest = 0
+        self._rendered = 0
 
     @property
     def name(self) -> str:
@@ -2832,6 +2886,12 @@ class EventArtifact(_ParamsMixin, ABC):
     def make_event(self, onset: int) -> Event: ...
 
     def _schedule_until(self, until: int) -> None:
+        """Thinned Poisson (DESIGN §5.2): candidates at rate_max, kept with p = rate(state)/rate_max.
+
+        An accepted onset inside the previous event's refractory gap is pushed to the end of the
+        gap, never dropped, so the nominal rate holds as long as rate x (length + gap) stays well
+        below one. Candidates and waveforms are drawn in onset order, so chunking cannot change them.
+        """
         if self._rate_max <= 0.0:
             return
         rng = self.ctx.rng
@@ -2860,10 +2920,10 @@ class EventArtifact(_ParamsMixin, ABC):
             self._pending.append(ev)
             self._truth.append(ev.truth)
             self._earliest = ev.end + int(round(self.min_gap_s * self.fs))
-            self._cand_s = max(self._cand_s, self._earliest / self.fs)
 
     def render(self, t0: int, n: int) -> np.ndarray:
         self._schedule_until(t0 + n)
+        self._rendered = t0 + n
         out = np.zeros((self.n_ch, n), dtype=np.float32)
         keep: list[Event] = []
         for ev in self._pending:
@@ -2876,12 +2936,17 @@ class EventArtifact(_ParamsMixin, ABC):
         return out
 
     def truth(self) -> list[TruthRecord]:
-        return list(self._truth)
+        """Events whose onset lies inside the rendered span (a pushed event may start later)."""
+        return [t for t in self._truth if t.onset_s * self.fs < self._rendered]
 
 
 class TransformArtifact(_ParamsMixin, ABC):
     kind: ClassVar[str] = "transform"
     mode: ClassVar[str] = "transform"
+
+    @property
+    def name(self) -> str:
+        return self.layer_name
 
     def bind(self, ctx: RenderContext) -> None:
         self.ctx = ctx
@@ -2948,7 +3013,7 @@ from open_eeg_synth.artifacts.registry import ARTIFACTS, make_artifact, register
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_artifact_base.py -v`
+Run: `pytest tests/test_artifact_base.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -3102,7 +3167,7 @@ def empirical(name: str, channels: Sequence[str], *, rng: np.random.Generator | 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_patterns.py -v`
+Run: `pytest tests/test_patterns.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -3123,7 +3188,7 @@ git commit -m "feat(artifacts): empirical and analytic scalp pattern sources"
 - Create: `tests/test_eog_patterns_file.py`
 
 **Interfaces:**
-- Consumes: MNE (`mne.datasets.eegbci`), internet on first run (~30 subjects × 2 runs, a few MB each).
+- Consumes: MNE (`mne.datasets.eegbci`), internet on first run (~30 subjects × 2 runs, a few MB each). If a subject cannot be downloaded the script stops at the subjects already on disk (1–20 give 20 blink maps and 17 heog maps; 1–30 give 30 and 25).
 - Produces: the data file of DESIGN §6.3 (`channel_names (64,)`, `blink_mean/sd`, `heog_mean/sd`, `n_subjects`, `subjects_used`, `attribution`).
 
 - [ ] **Step 1: Write the notice** `src/open_eeg_synth/artifacts/data/NOTICE-eegmmidb.txt`:
@@ -3151,6 +3216,8 @@ import numpy as np
 
 from open_eeg_synth.artifacts.patterns import load_eog_patterns
 
+HEOG_SD_MAX = 0.45  # measured 0.42 over 30 subjects (0.40 over 17): the heog map varies more than blink
+
 
 def _idx(names, label):
     return [str(n) for n in names].index(label)
@@ -3176,6 +3243,7 @@ def test_heog_map_is_lateral():
     f7, f8 = _idx(names, "F7"), _idx(names, "F8")
     assert np.sign(h[f7]) == -np.sign(h[f8]) and h[f8] > 0
     assert set(np.argsort(-np.abs(h))[:2]) <= {f7, f8, _idx(names, "AF7"), _idx(names, "AF8")}
+    assert f["heog_sd"].max() < HEOG_SD_MAX
     assert int(f["n_subjects"]) >= 15
     assert "10.13026/C28G6P" in str(f["attribution"])
 ```
@@ -3252,7 +3320,11 @@ def main() -> None:
     blink_maps, heog_maps, log = [], [], {}
     names: list[str] | None = None
     for subj in range(1, args.subjects + 1):
-        raw = _load_subject(subj, args.data_path)
+        try:
+            raw = _load_subject(subj, args.data_path)
+        except Exception as exc:  # noqa: BLE001 - no network: use the subjects already on disk
+            print(f"subject {subj}: cannot load ({exc!s:.80}); stopping at {subj - 1}", flush=True)
+            break
         names = names or list(raw.ch_names)
         ica = mne.preprocessing.ICA(n_components=30, method="fastica", random_state=0,
                                     max_iter="auto", verbose=False)
@@ -3270,11 +3342,12 @@ def main() -> None:
                 blink_maps.append(m / np.abs(m).max())
                 entry["blink"] = {"component": int(k), "corr": float(cb[k])}
                 break
-        # heog: lateral prior, slow time course
+        # heog: lateral prior, slow time course (< 40 % of the power above 5 Hz after the
+        # 1 Hz high-pass; 0.2 keeps only 4 of 20 subjects, 0.4 keeps 17)
         ch = [np.corrcoef(topo[:, k], _prior(names, HEOG_PRIOR))[0, 1] for k in range(topo.shape[1])]
         order = np.argsort(-np.abs(ch))
         for k in order[:5]:
-            if _hf_share(src[k], fs) < 0.2:
+            if _hf_share(src[k], fs) < 0.4:
                 m = topo[:, k] * np.sign(ch[k])
                 heog_maps.append(m / np.abs(m).max())
                 entry["heog"] = {"component": int(k), "corr": float(ch[k])}
@@ -3306,8 +3379,8 @@ if __name__ == "__main__":
 
 - [ ] **Step 5: Run the derivation, then the tests**
 
-Run: `python scripts/derive_artifact_patterns.py --subjects 30 && pytest tests/test_eog_patterns_file.py tests/test_patterns.py -v`
-Expected: at least 15 subjects contribute to each map; tests PASS. If the blink map's posterior entries exceed 0.25 in magnitude, raise the kurtosis threshold to 8 and rerun; if fewer than 15 subjects clear the heog criterion, relax `_hf_share < 0.3`. Record what you changed in the commit message.
+Run: `python scripts/derive_artifact_patterns.py --subjects 30 && pytest tests/test_eog_patterns_file.py tests/test_patterns.py -v && ruff check . && ruff format --check .`
+Expected: at least 15 subjects contribute to each map; tests PASS. Measured on subjects 1–30 (21–30 downloaded in about a minute): blink 30/30 (Fp1 and Fp2 the two largest, |O1| = |O2| = 0.23, `blink_sd` max 0.22), heog 25/30 (F7 −0.58, F8 +0.59, the two largest, `heog_sd` max 0.42). If the blink map's posterior entries exceed 0.25 in magnitude, raise the kurtosis threshold to 8 and rerun; if fewer than 15 subjects clear the heog criterion, relax `_hf_share < 0.5`. Record what you changed in the commit message.
 
 - [ ] **Step 6: Commit** (the `.npz`, the notice and the selection log are all committed)
 
@@ -3327,7 +3400,7 @@ git commit -m "feat(artifacts): empirical blink and horizontal eye-movement maps
 
 **Interfaces:**
 - Consumes: `EventArtifact`, `patterns.empirical`, `raised_cosine_envelope`.
-- Produces: `Blink(*, rate_by_state=None, min_gap_s=0.4, median_uv=120.0, sigma=0.3, peak_range_uv=(60.0, 250.0), double_p=0.15)` registered as `"blink"`; `Blink.waveform(fs, dur_s) -> (n,)` unit-peak.
+- Produces: `Blink(*, rate_by_state=None, min_gap_s=0.4, median_uv=120.0, sigma=0.3, peak_range_uv=(60.0, 250.0), double_p=0.15)` registered as `"blink"`; `Blink.waveform(fs, dur_s) -> (n,)` unit-peak (normalised on the sampled grid, where the raised-cosine rise never lands exactly on 1.0).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3366,7 +3439,7 @@ def test_blinks_only_with_eyes_open_and_frontal_positive():
     truth = art.truth()
     assert 8 <= len(truth) <= 25 and all(t.onset_s < 60 for t in truth)
     fp1, o1 = CHANNELS_19.index("Fp1"), CHANNELS_19.index("O1")
-    assert x[fp1].max() > 60 and x[fp1].max() > 5 * np.abs(x[o1]).max()
+    assert x[fp1].max() > 60 and x[fp1].max() > 4 * np.abs(x[o1]).max()  # |O1| < 0.25 (Task 15)
     t = truth[0]
     assert t.kind == "blink" and t.subtype in ("single", "double") and "Fp1" in t.channels
     assert t.remedies == (Remedy.REMOVE_COMPONENT, Remedy.MASK_SEGMENT)
@@ -3420,7 +3493,8 @@ class Blink(EventArtifact):
         t = np.arange(n) / fs
         rise, tau = 0.35 * dur_s, 0.22 * dur_s
         w = np.where(t < rise, 0.5 * (1.0 - np.cos(np.pi * t / rise)), np.exp(-(t - rise) / tau))
-        return w * raised_cosine_envelope(n, fs, 0.0, 0.05 * dur_s)
+        w = w * raised_cosine_envelope(n, fs, 0.0, 0.05 * dur_s)
+        return w / w.max()  # unit peak on the sampled grid
 
     def make_event(self, onset: int) -> Event:
         rng = self.ctx.rng
@@ -3443,7 +3517,7 @@ Add `from open_eeg_synth.artifacts import blink  # noqa: F401` at the bottom of 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_blink.py -v`
+Run: `pytest tests/test_blink.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -3573,7 +3647,7 @@ Add `from open_eeg_synth.artifacts import eye_movement  # noqa: F401` to `artifa
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_eye_movement.py -v`
+Run: `pytest tests/test_eye_movement.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -3745,7 +3819,7 @@ Add `from open_eeg_synth.artifacts import jaw_emg  # noqa: F401` to `artifacts/_
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_jaw_emg.py -v`
+Run: `pytest tests/test_jaw_emg.py -v && ruff check . && ruff format --check .`
 Expected: PASS. If `test_burst_is_broadband_above_20hz_and_band_limited` fails on the `top` assertion, the decimator's transition band is too wide: pass `window=("kaiser", 8.0)` in `lowpass_decimate` (Task 5) — that change is allowed and its own test still passes.
 
 - [ ] **Step 5: Commit**
@@ -3856,7 +3930,7 @@ Add `from open_eeg_synth.artifacts import dead_channel  # noqa: F401` to `artifa
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/test_dead_channel.py -v`
+Run: `pytest tests/test_dead_channel.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -3872,7 +3946,6 @@ git commit -m "feat(artifacts): dead-channel transform plug-in"
 
 **Files:**
 - Modify: `src/open_eeg_synth/recipes.py` (`ordinary_artifacts`)
-- Modify: `src/open_eeg_synth/case.py` (artifact imports at the top of `make_engine`)
 - Create: `tests/test_case_artifacts.py`
 
 **Interfaces:**
@@ -3943,17 +4016,17 @@ def ordinary_artifacts() -> tuple[ArtifactSpec, ...]:
     return (ArtifactSpec("blink"), ArtifactSpec("eye_movement"), ArtifactSpec("emg", {"side": "random"}))
 ```
 
-In `case.py`, move the two imports (`Occupancy, RenderContext` and `make_artifact`) to the top of `make_engine` (they now resolve because `open_eeg_synth.artifacts` exists), and add `import open_eeg_synth.artifacts  # noqa: F401` at module top so the built-in kinds register whenever a case is built.
+`case.py` needs no change: its module-level `import open_eeg_synth.artifacts` (Task 12) already registers every built-in kind that Tasks 16–19 added to `artifacts/__init__.py`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_case_artifacts.py -v && pytest -q`
+Run: `pytest tests/test_case_artifacts.py -v && pytest -q && ruff check . && ruff format --check .`
 Expected: PASS; the whole fast suite green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/open_eeg_synth/recipes.py src/open_eeg_synth/case.py tests/test_case_artifacts.py
+git add src/open_eeg_synth/recipes.py tests/test_case_artifacts.py
 git commit -m "feat(case): ordinary artifact set in every case; truth aggregated per layer"
 ```
 
@@ -3971,7 +4044,7 @@ git commit -m "feat(case): ordinary artifact set in every case; truth aggregated
 
 **Interfaces:**
 - Consumes: `RhythmSpec`, `BurstGate`, `compiled_rhythms` (already calls `apply_modifiers`).
-- Produces: `PlantRecord` (+ `to_dict`), `Modifier(rhythm, amp_scale=1.0, f0_shift_hz=0.0, hemisphere_gain={}, extra_sites=())`, `apply_modifiers(rhythms, modifiers)`, `PLANTS` registry, `register_plant`, `plant_to_dict`, `plant_from_dict`, and the six primitives `FocalSlow`, `RhythmicBursts`, `LateralImbalance`, `WidespreadExcess`, `PeakShift`, `ReducedRhythm`, each a frozen dataclass with `kind`, `rhythms()`, `modifiers()`, `record()`.
+- Produces: `PlantRecord` (+ `to_dict`, JSON-safe: tuples in `params` become lists), `Modifier(rhythm, amp_scale=1.0, f0_shift_hz=0.0, hemisphere_gain={}, extra_sites=())`, `apply_modifiers(rhythms, modifiers)`, `PLANTS` registry, `register_plant`, `plant_to_dict`, `plant_from_dict`, and the six primitives `FocalSlow`, `RhythmicBursts`, `LateralImbalance`, `WidespreadExcess`, `PeakShift`, `ReducedRhythm`, each a frozen dataclass with `kind`, `rhythms()`, `modifiers()`, `record()`. `FocalSlow` and `RhythmicBursts` take an optional `state_gain: dict[str, float]` (default empty) that is passed through to the `RhythmSpec` they compile to, so a consumer can confine a plant to some states (`{"eyes_open": 0.0}` plants it eyes-closed only); the record's `params` carry it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4038,8 +4111,26 @@ def test_lateral_imbalance_and_reduced_rhythm():
 def test_rhythmic_bursts_are_intermittent():
     fz = CHANNELS_19.index("Fz")
     x = _ec(23, (RhythmicBursts(("Fz",), f0_hz=6.5, amp_uv=30.0, burst_s=(1, 2), gap_s=(4, 6)),))
-    env = np.abs(x[fz]).reshape(-1, int(FS)).max(axis=1)
-    assert env.max() > 2.5 * np.median(env)
+    x = x - x.mean(axis=0, keepdims=True)  # average reference
+    theta = np.array([band_power(x[fz, s : s + int(FS)], FS, 5.5, 7.5)[0]
+                      for s in range(0, x.shape[1], int(FS))])  # per-second theta power at Fz
+    assert theta.max() > 4 * np.median(theta)  # burst seconds stand well above the gaps
+
+
+def test_plant_state_gain_silences_a_plant_by_state():
+    f7 = CHANNELS_19.index("F7")
+    plant = FocalSlow("F7", f0_hz=2.5, amp_uv=45.0, state_gain={"eyes_open": 0.0})
+    for cond in ("eyes_open", "eyes_closed"):
+        clean = make_case(resting_case(24, duration_s=20.0, artifacts=())).recordings[cond].mixed
+        planted = make_case(resting_case(24, duration_s=20.0, plants=(plant,), artifacts=()))
+        ratio = (band_power(planted.recordings[cond].mixed, FS, 1.5, 3.5)[f7]
+                 / band_power(clean, FS, 1.5, 3.5)[f7])
+        if cond == "eyes_open":
+            assert abs(ratio - 1.0) < 1e-3  # silenced: the other streams are untouched (DESIGN §8.1)
+        else:
+            assert ratio > 4
+    assert plant.record().to_dict()["params"]["state_gain"] == {"eyes_open": 0.0}
+    assert plant_from_dict(plant_to_dict(plant)) == plant
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -4076,6 +4167,7 @@ class PlantRecord:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["sites"], d["band_hz"] = list(self.sites), list(self.band_hz)
+        d["params"] = {k: (list(v) if isinstance(v, tuple) else v) for k, v in self.params.items()}
         return d
 
 
@@ -4148,11 +4240,13 @@ class FocalSlow:
     env_tau_s: float = 1.5
     env_sd: float = 0.6
     indep: float = 0.3
+    state_gain: dict[str, float] = field(default_factory=dict)  # e.g. {"eyes_open": 0.0}
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         return (RhythmSpec(f"plant:focal_slow:{self.site}", self.f0_hz, self.amp_uv,
                            sites=(self.site,), width_mm=self.width_mm, f_sd=self.f_sd,
-                           env_tau_s=self.env_tau_s, env_sd=self.env_sd, lag_ms=0.0, indep=self.indep),)
+                           env_tau_s=self.env_tau_s, env_sd=self.env_sd, lag_ms=0.0, indep=self.indep,
+                           state_gain=dict(self.state_gain)),)
 
     def modifiers(self) -> tuple[Modifier, ...]:
         return ()
@@ -4177,12 +4271,13 @@ class RhythmicBursts:
     env_tau_s: float = 1.0
     env_sd: float = 0.8
     indep: float = 0.2
+    state_gain: dict[str, float] = field(default_factory=dict)
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         name = "plant:rhythmic_bursts:" + "+".join(self.sites)
         return (RhythmSpec(name, self.f0_hz, self.amp_uv, sites=self.sites, width_mm=self.width_mm,
                            env_tau_s=self.env_tau_s, env_sd=self.env_sd, env_lo=0.1, env_hi=3.0,
-                           lag_ms=0.0, indep=self.indep,
+                           lag_ms=0.0, indep=self.indep, state_gain=dict(self.state_gain),
                            burst=BurstGate(self.burst_s, self.gap_s, 0.3)),)
 
     def modifiers(self) -> tuple[Modifier, ...]:
@@ -4275,7 +4370,7 @@ Note: `ClassVar` fields are not dataclass fields, so `asdict` skips `kind` and `
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_plants.py tests/test_case.py -v`
+Run: `pytest tests/test_plants.py tests/test_case.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -4305,7 +4400,7 @@ import numpy as np
 from open_eeg_synth.case import make_case
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.recipes import resting_case
-from tests.helpers import band_power
+from tests.helpers import band_power, welch
 
 FS = 256.0
 
@@ -4319,11 +4414,10 @@ def test_drowsy_half_has_less_slower_alpha_more_theta_and_roving_eyes():
     assert band_power(drowsy, FS, 8, 13)[o1] < 0.4 * band_power(alert, FS, 8, 13)[o1]
     assert band_power(drowsy, FS, 4, 8)[fz] > 2.0 * band_power(alert, FS, 4, 8)[fz]
     # alpha peak moves down by about 1 Hz
-    def peak(seg):
-        f = np.fft.rfftfreq(seg.shape[1], 1 / FS)
-        p = np.abs(np.fft.rfft(seg[o1])) ** 2
+    def peak(seg):  # Welch (4 s Hann) rather than a raw periodogram: the argmax is far less noisy
+        f, p = welch(seg[o1], FS, int(4 * FS))
         m = (f >= 6) & (f <= 13)
-        return f[m][np.argmax(p[m])]
+        return f[m][np.argmax(p[0, m])]
     assert peak(alert) - peak(drowsy) > 0.5
     subtypes = [(t.onset_s, t.subtype) for t in rec.truth if t.kind == "eye_movement"]
     assert any(s == "slow_roving" and on > 60 for on, s in subtypes)
@@ -4333,7 +4427,7 @@ def test_drowsy_half_has_less_slower_alpha_more_theta_and_roving_eyes():
 
 - [ ] **Step 2: Run the test**
 
-Run: `pytest tests/test_drowsiness.py -v`
+Run: `pytest tests/test_drowsiness.py -v && ruff check . && ruff format --check .`
 Expected: PASS on the first run if Tasks 9–21 are correct. If the theta assertion fails, the theta `state_gain {"drowsy": 2.0}` is not reaching `Rhythm` — check `compiled_rhythms` preserves `state_gain` through `apply_modifiers` (`replace` keeps untouched fields). If the peak-shift assertion fails, check `_Oscillator.render` adds `f0_shift` to the frequency and `StateTimeline.gain(..., default=0.0)` is used for the shift.
 
 - [ ] **Step 3: Commit**
@@ -4376,7 +4470,7 @@ def test_full_spec_survives_json_and_ids_are_stable():
 
 - [ ] **Step 2: Run the test**
 
-Run: `pytest tests/test_case_spec_json.py -v`
+Run: `pytest tests/test_case_spec_json.py -v && ruff check . && ruff format --check .`
 Expected: PASS. If `back == spec` fails on `plants`, a tuple became a list in `plant_from_dict` — the conversion there handles top-level lists only; keep plant parameters flat.
 
 - [ ] **Step 3: Commit**
@@ -4489,7 +4583,7 @@ def write_edf(path, recording: Recording, *, physical_range_uv: tuple[float, flo
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_edf.py -v`
+Run: `pytest tests/test_edf.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -4653,7 +4747,7 @@ def render_layers(truth: dict, condition: str, *, rtol: float = 1e-3) -> Recordi
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_truth.py -v`
+Run: `pytest tests/test_truth.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -4674,7 +4768,7 @@ git commit -m "feat(casefile): sealed truth container with re-render verificatio
 - Create: `tests/test_writer_cli.py`
 
 **Interfaces:**
-- Produces: `CasePaths(truth: Path, recordings: dict[str, Path], layers: Path | None)`; `write_case(directory, case, *, embed_layers=False, physical_range_uv=(-2000, 2000)) -> CasePaths`; `read_case_truth(path) -> dict` (alias of `read_truth`); CLI `python -m open_eeg_synth make-case --seed N --out DIR [--duration S] [--spec spec.json] [--embed-layers] [--print-truth]`.
+- Produces: `CasePaths(truth: Path, recordings: dict[str, Path], layers: Path | None)`; `write_case(directory, case, *, embed_layers=False, physical_range_uv=(-2000, 2000)) -> CasePaths`; `read_case_truth(path) -> dict` (alias of `read_truth`); `render_layers` re-exported from `casefile.writer` (DESIGN §7.4 names it there); CLI `python -m open_eeg_synth make-case --seed N --out DIR [--duration S] [--spec spec.json] [--embed-layers] [--print-truth]`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4736,7 +4830,9 @@ import numpy as np
 
 from open_eeg_synth.case import Case
 from open_eeg_synth.casefile.edf import write_edf
-from open_eeg_synth.casefile.truth import case_truth, read_truth, write_truth
+from open_eeg_synth.casefile.truth import case_truth, read_truth, render_layers, write_truth
+
+__all__ = ["CasePaths", "read_case_truth", "render_layers", "write_case"]
 
 
 @dataclass
@@ -4816,7 +4912,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_writer_cli.py -v`
+Run: `pytest tests/test_writer_cli.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -4870,7 +4966,7 @@ def test_ecg_is_spiky_at_about_72_bpm_and_chunk_invariant():
 
     whole, h = run([int(60 * FS)])
     chunked, _ = run([32] * int(60 * FS / 32))
-    assert np.allclose(whole, chunked)
+    assert np.allclose(whole, chunked, atol=1e-3)  # beat windows cut Gaussian tails at ~1e-4 uV
     assert 150 < whole.max() <= 205 and _kurt(whole) > 3.0
     beats = h.beats_between(0.0, 60.0)
     assert 62 <= len(beats) <= 82
@@ -4939,7 +5035,7 @@ class HeartSource:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_heart.py -v`
+Run: `pytest tests/test_heart.py -v && ruff check . && ruff format --check .`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -4961,7 +5057,7 @@ git commit -m "feat: HeartSource with streaming beat schedule and ECG waveform"
 
 **Interfaces:**
 - Consumes: `classic.synth.MarkerSchedule` (re-exported unchanged), `make_subject`, `make_engine`, `HeartSource`, `resting_brain`, `ordinary_artifacts`.
-- Produces: `StreamSource(channel_labels, srate, *, seed=None, markers=None, timeline=None, brain=None, artifacts=None, sensor=None, perturb_head=True)` with `.next_chunk(n)`, `.due_markers(n)`, `.truth`, `.seed`, `.labels`, `.srate`.
+- Produces: `StreamSource(channel_labels, srate, *, seed=None, markers=None, timeline=None, brain=None, artifacts=None, sensor=None, perturb_head=True)` with `.next_chunk(n)`, `.due_markers(n)`, `.truth`, `.seed`, `.labels`, `.srate`. Any EEG label set works (one channel, four, nineteen): the brain is built on the full head and only the requested rows are rendered (Task 12).
 
 - [ ] **Step 1: Write the failing tests** (these mirror what a recording application's own tests assert about its mock devices)
 
@@ -4970,6 +5066,7 @@ git commit -m "feat: HeartSource with streaming beat schedule and ECG waveform"
 import numpy as np
 import pytest
 
+from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import UnknownChannelError
 from open_eeg_synth.markers import MarkerSchedule
 from open_eeg_synth.stream import StreamSource
@@ -5018,17 +5115,23 @@ def test_chunk_size_does_not_change_the_signal():
 
 
 def test_pink_slope_posterior_alpha_and_ecg_only_on_hr():
-    s = StreamSource(Q21, 256.0, seed=3)
-    x = np.concatenate([s.next_chunk(256) for _ in range(16)], axis=1)
-    cz = x[17]
-    assert band_power(cz, 256.0, 2, 6)[0] > band_power(cz, 256.0, 30, 50)[0]
-    occ = band_power(x[8], 256.0, 8, 12)[0] + band_power(x[9], 256.0, 8, 12)[0]
-    front = band_power(x[0], 256.0, 8, 12)[0] + band_power(x[1], 256.0, 8, 12)[0]
-    base_occ = band_power(x[8], 256.0, 5, 8)[0] + band_power(x[9], 256.0, 5, 8)[0]
-    base_front = band_power(x[0], 256.0, 5, 8)[0] + band_power(x[1], 256.0, 5, 8)[0]
-    assert occ > front and (occ - base_occ) > 3.0 * (front - base_front)
-    hr = x[19]
-    assert hr.max() > 120.0 and _kurt(hr) > 3.0 and _kurt(x[8]) < 1.5
+    # Eyes closed and artifact-free: the layered default (eyes open + blinks) legitimately has more
+    # frontal 8-12 Hz power than occipital. Posterior dominance is judged after average
+    # referencing (the lead field's native reference carries a common component, DESIGN §2.3)
+    # and as a median over subjects, because alpha varies by subject as much as it does in life.
+    ratios = []
+    for seed in (3, 4, 5):
+        s = StreamSource(Q21, 256.0, seed=seed, timeline=StateTimeline.constant("eyes_closed"),
+                         artifacts=())
+        x = np.concatenate([s.next_chunk(256) for _ in range(16)], axis=1)
+        cz = x[17]
+        assert band_power(cz, 256.0, 2, 6)[0] > band_power(cz, 256.0, 30, 50)[0]
+        eeg = x[:19] - x[:19].mean(axis=0, keepdims=True)
+        a = band_power(eeg, 256.0, 8, 12)
+        ratios.append((a[8] + a[9]) / (a[0] + a[1]))
+        hr = x[19]
+        assert hr.max() > 120.0 and _kurt(hr) > 3.0 and _kurt(x[8]) < 1.5
+    assert np.median(ratios) > 2.0  # occipital alpha well above frontal
 
 
 def test_arbitrary_montages_and_rates():
@@ -5166,8 +5269,8 @@ class StreamSource:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_stream.py -v`
-Expected: PASS. Construction of a `StreamSource` costs ~1 s (head perturbation + mixing) — acceptable for a mock device that starts once; note it in the docstring.
+Run: `pytest tests/test_stream.py -v && ruff check . && ruff format --check .`
+Expected: PASS. Construction of a `StreamSource` costs about half a second (head perturbation + mixing on the full model) — acceptable for a mock device that starts once; note it in the docstring. Note for the recorder (Task 29 R7): the raw stream's alpha is far less posterior-dominant than the classic synthesizer's, because the lead field's native reference carries a common component that every channel shares (DESIGN §2.3); a live view that re-references (average or linked ears) shows the gradient, a raw referential view shows alpha on every channel, as a real referential amplifier does.
 
 - [ ] **Step 5: Commit**
 
@@ -5206,7 +5309,7 @@ and call `_mock_engine(...)` in the three loops. `next_chunk(n)` and `due_marker
 
 - [ ] **R6 (optional, later).** Drive the mock impedance display from `open_eeg_synth.contact.ContactTimeline` when the loose-lead plug-in lands; until then the recorder's own wobble stays.
 
-- [ ] **R7. Smoke.** Start the recorder with a mock Q21, open the live view, confirm: posterior alpha visible, blinks at Fp1/Fp2 with the real gradient (not a flat frontal rectangle), an occasional temporal EMG burst, ECG on HR. Commit with the dependency bump.
+- [ ] **R7. Smoke.** Start the recorder with a mock Q21, open the live view, confirm: posterior alpha visible once the view is re-referenced (in the raw referential view the lead field's common component puts alpha on every channel — see Task 28), blinks at Fp1/Fp2 with the real gradient (not a flat frontal rectangle), an occasional temporal EMG burst, ECG on HR. Commit with the dependency bump.
 
 **M6 acceptance (package side):** `pytest -q` green; `python -c "from open_eeg_synth import StreamSource; s=StreamSource(['O1','O2','T3','T4'],250.0,seed=1); print(s.next_chunk(25).shape)"` prints `(4, 25)`.
 
@@ -5223,7 +5326,7 @@ and call `_mock_engine(...)` in the three loops. `next_chunk(n)` and `due_marker
 
 **Interfaces:**
 - Consumes: `mne`, `mne_connectivity` (skip if absent).
-- Produces: `BANDS`, `DIST_EDGES`, `CHAINS`, `to_raw(x_uv, fs, channels)`, `prep(raw, remove_blinks=False)`, `bipolar(raw)`, `laplacian(raw)`, `measure(raw, remove_blinks=False) -> dict` with keys `n_epochs`, `<ref>/<Band>/coh_mean`, `<ref>/<Band>/dwpli_mean`, `<ref>/<Band>/coh_by_dist` (5 values), `aperiodic_exponent`, `alpha_share/O1|Fz|Cz`, `rms_uv/<ch>`.
+- Produces: `BANDS`, `DIST_EDGES`, `CHAINS`, `to_raw(x_uv, fs, channels)`, `prep(raw, remove_blinks=False)`, `bipolar(raw)`, `laplacian(raw)`, `measure(raw, remove_blinks=False) -> dict` with keys `n_epochs`, `<ref>/<Band>/coh_mean`, `<ref>/<Band>/dwpli_mean`, `<ref>/<Band>/coh_by_dist` (5 values), `aperiodic_exponent`, `alpha_share/O1|Fz|Cz`, `rms_uv/<ch>`. The method is the feasibility test's, exactly: `spectral_connectivity_epochs(method=["wpli2_debiased", "coh"], fmin=…, fmax=…, faverage=True)` on 4 s fixed-length epochs after 1–45 Hz, `standard_1020`, average reference; the dense output is read as `(M + Mᵀ)/2` over the upper triangle. mne-connectivity fills only the lower triangle, so every coherence and dwPLI value is one half of the magnitude coherence / dwPLI — the convention of DESIGN §9.1, of the reference file and of the consuming application's electrode-connectivity code. Do not "fix" this by squaring or by reading the lower triangle: the reference and the synthetic side must share one convention, and Task 31 cross-checks it.
 
 - [ ] **Step 1: Write the smoke test**
 
@@ -5347,10 +5450,15 @@ def measure(raw: mne.io.Raw, remove_blinks: bool = False) -> dict:
         coh = con[1].get_data(output="dense")
         pos = _pair_positions(names)
         dist = np.linalg.norm(pos[:, None] - pos[None], axis=2) * 1000.0
-        il = np.tril_indices(len(names), -1)  # dense output is lower-triangular
-        bins = np.digitize(dist[il], DIST_EDGES) - 1
+        # The feasibility test (and the consuming application's electrode-connectivity code) read
+        # the dense output as (M + M.T) / 2 over the upper triangle. mne-connectivity fills only the
+        # lower triangle, so every value is HALF the magnitude coherence / dwPLI. Reproduced exactly:
+        # the reference file, DESIGN §9.1 and the synthetic side all share this one convention.
+        iu = np.triu_indices(len(names), 1)
+        bins = np.digitize(dist[iu], DIST_EDGES) - 1
         for bi, band in enumerate(BANDS):
-            c, w = coh[..., bi][il], dw[..., bi][il]
+            c = (0.5 * (coh[..., bi] + coh[..., bi].T))[iu]
+            w = (0.5 * (dw[..., bi] + dw[..., bi].T))[iu]
             res[f"{ref}/{band}/coh_by_dist"] = [float(c[bins == k].mean()) if np.any(bins == k) else None
                                                 for k in range(len(DIST_EDGES) - 1)]
             res[f"{ref}/{band}/coh_mean"] = float(c.mean())
@@ -5368,11 +5476,11 @@ def measure(raw: mne.io.Raw, remove_blinks: bool = False) -> dict:
     return res
 ```
 
-If `get_data(output="dense")` returns the upper triangle in the installed mne-connectivity, swap `tril_indices(-1)` for `triu_indices(1)`; the smoke test's `coh_mean` in `[0, 1]` catches a wrong choice (zeros drag it to ~0).
+The symmetrise-then-upper-triangle reading is insensitive to which triangle the installed mne-connectivity fills, as long as it fills exactly one; Task 31's cross-check against the feasibility test's percentiles (agreement to 0.002) is the guard.
 
 - [ ] **Step 3: Run**
 
-Run: `pytest -m slow tests/realism/test_measure_smoke.py -v`
+Run: `pytest -m slow tests/realism/test_measure_smoke.py -v && ruff check . && ruff format --check .`
 Expected: PASS (~20 s).
 
 - [ ] **Step 4: Commit**
@@ -5479,7 +5587,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it and eyeball the numbers**
 
 Run: `python scripts/build_realism_reference.py --subjects 20`
-Expected: 20 usable subjects per condition; `groups.eyes_closed["average/Alpha/coh_mean"]` ≈ `{p10 0.18, p50 0.25, p90 0.29}` and `aperiodic_exponent` p50 ≈ 1.2 (DESIGN §9.1). If the numbers differ by more than 0.03, the measurement module differs from the feasibility test's (check the triangle choice in Task 30 and the ICA blink removal).
+Expected: 20 usable subjects per condition; `groups.eyes_closed["average/Alpha/coh_mean"]` = `{p10 0.182, p50 0.248, p90 0.285}`, `average/Alpha/dwpli_mean` = `{0.067, 0.092, 0.191}`, `aperiodic_exponent` p50 1.196, `rms_uv/Cz` p50 13.7 (DESIGN §9.1; the module reproduced the feasibility test's percentiles to 0.002 on every coherence, dwPLI, exponent and alpha-share entry). If any coherence or dwPLI percentile differs by more than 0.02, the measurement module differs from the feasibility test's — a factor of two means the `(M + Mᵀ)/2` reading in Task 30 was changed; otherwise check the ICA blink removal and the epoching.
 
 - [ ] **Step 3: Commit**
 
@@ -5495,6 +5603,8 @@ git commit -m "test(realism): committed PhysioNet reference percentiles (ODC-By 
 **Files:**
 - Create: `tests/realism/test_realism.py`
 - Modify (tuning only): `src/open_eeg_synth/recipes.py`
+
+Runs after Task 33 (ruff per-file ignores for `tests/realism/`) and after Task 12's calibration.
 
 - [ ] **Step 1: Write the test**
 
@@ -5563,7 +5673,7 @@ def test_resting_recipe_matches_public_reference(cond):
 - [ ] **Step 2: Run it**
 
 Run: `pytest -m realism tests/realism/test_realism.py -v` (2–4 min)
-Expected: the average and bipolar rows pass; the Laplacian alpha/theta rows may fail by a few hundredths (the known gap, DESIGN §11.2).
+Expected: with the calibrated recipe, the average and bipolar coherence rows pass; the Laplacian alpha/theta rows may fail by a few hundredths (the known gap, DESIGN §11.2). For orientation, the recipe *before* Task 12's calibration fails about seven lines per condition: dwPLI two to three times too low under every reference (e.g. average/Alpha 0.032 against a 0.067–0.191 band), the nearest-distance coherence bin too high under bipolar and Laplacian, and the O1 alpha share 0.33 eyes closed. dwPLI comes from the delayed network and the rhythms' inter-patch lags (DESIGN §4.2, §4.3), so if it is still low after calibration the knobs are `NetworkSpec.coupling` (1.0 → 1.5), `network_frac`, and the rhythms' `lag_ms`.
 
 - [ ] **Step 3: Tune, at most two hours.** In this order, one change at a time, rerunning the test after each: (a) alpha `indep` 0.6 → 0.75; (b) alpha `n_patches` 4 → 6; (c) network `width_mm` 15 → 12; (d) background `smoothing_mm` 20 → 17. Keep a change only if it reduces the number of failing lines without breaking the average/bipolar rows or the fast tests (`pytest -q`, especially `tests/test_brain_layer.py` and the Task 12 calibration). Stop when the test passes or the two hours are up; in the latter case leave the failing Laplacian lines documented in the README's "Known gaps" section (Task 35) and widen `TOL["laplacian"]` to the smallest value that passes, noting the value in the commit message.
 
@@ -5583,7 +5693,7 @@ git commit -m "test(realism): resting recipe against PhysioNet percentile bands;
 - Create: `.github/workflows/realism.yml`
 - Modify: `pyproject.toml` (`[tool.ruff]`)
 
-- [ ] **Step 1: ci.yml** — matrix 3.10/3.11/3.12, `pip install -e ".[dev]"`, `ruff check .`, `ruff format --check .`, `pytest -q` (fast set; `addopts` excludes `realism` and `slow`), `pytest -m slow -q` on 3.11 only, `python -m build --wheel` and `unzip -l dist/*.whl | grep -E "colin27_19ch.npz|eog_patterns.npz|NOTICE"` must list four files.
+- [ ] **Step 1: ci.yml** — keep the existing workflow's shape and action versions (`actions/checkout@v7`, `actions/setup-python@v7`, matrix 3.10/3.11/3.12, `pip install -e ".[dev]"`, `ruff check .`, `ruff format --check .`); change the test step to `pytest -q` (the `addopts` from Task 1 excludes `realism` and `slow`; a command-line `-m` would override it), add `pytest -m slow -q` on 3.11 only, and add `python -m build --wheel` followed by `unzip -l dist/*.whl | grep -E "colin27_19ch.npz|eog_patterns.npz|NOTICE"`, which must list four files.
 
 ```yaml
 name: CI
@@ -5596,8 +5706,8 @@ jobs:
     strategy:
       matrix: {python: ['3.10', '3.11', '3.12']}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: {python-version: '${{ matrix.python }}'}
       - run: pip install -e ".[dev]" build
       - run: ruff check . && ruff format --check .
@@ -5610,7 +5720,7 @@ jobs:
 
 - [ ] **Step 2: realism.yml** — `workflow_dispatch` plus weekly `schedule: cron: "0 6 * * 1"`, Python 3.11, `pip install -e ".[dev]"`, `pytest -m realism -v` (no download: the reference JSON is committed).
 
-- [ ] **Step 3: ruff** — `[tool.ruff] line-length = 100 target-version = "py310"`, `[tool.ruff.lint] select = ["E", "F", "I", "UP", "B"]`, `per-file-ignores = {"tests/realism/*" = ["E402"], "tests/*" = ["E501"]}`. Run `ruff check . --fix && ruff format .` and fix what remains by hand.
+- [ ] **Step 3: ruff** — keep the repo's `[tool.ruff]` (`line-length = 100`, `target-version = "py310"`) and `[tool.ruff.lint] select = ["E", "F", "W", "I", "B", "UP"]` unchanged; add `[tool.ruff.lint.per-file-ignores]` with `"tests/realism/*" = ["E402"]` and `"scripts/*" = ["E402"]` (the MNE scripts import after `sys.path` setup). Run `ruff check . --fix && ruff format .` and fix what remains by hand.
 
 - [ ] **Step 4: Commit**
 
@@ -5682,8 +5792,8 @@ print("wrote", GOLDEN)
 
 - [ ] **Step 2: Generate, run, commit**
 
-Run: `python scripts/update_golden.py && pytest tests/test_golden_engine.py -v`
-Expected: PASS. Add to `CONTRIBUTING.md` (create it, ten lines): "any change that alters generated samples for a fixed seed bumps `SIGNAL_VERSION` in `version.py` and runs `scripts/update_golden.py` in the same commit".
+Run: `python scripts/update_golden.py && pytest tests/test_golden_engine.py -v && ruff check . && ruff format --check .`
+Expected: PASS. Append to the existing `CONTRIBUTING.md` (do not replace it) a short section: "any change that alters generated samples for a fixed seed bumps `SIGNAL_VERSION` in `version.py` and runs `scripts/update_golden.py` in the same commit".
 
 ```bash
 git add tests/golden tests/test_golden_engine.py scripts/update_golden.py CONTRIBUTING.md
@@ -5701,7 +5811,7 @@ git commit -m "test: golden fingerprint guarded by SIGNAL_VERSION"
 
 - [ ] **Step 2: CHANGELOG** — `## 0.2.0` listing: layered engine, head model file + perturbation, brain layer, artifact framework with blink / eye movement / jaw EMG / dead channel, plants, state timeline, case files + sealed truth, `StreamSource`, realism suite, scipy runtime dependency (new), data files and notices.
 
-- [ ] **Step 3: Version and tag**
+- [ ] **Step 3: Version and tag** — tonight this step stops after the commit: the branch is pushed and a PR opened for review; the tag, the release and the merge to `main` wait for that review.
 
 ```bash
 sed -i '' 's/__version__ = ".*"/__version__ = "0.2.0"/' src/open_eeg_synth/version.py
@@ -5714,7 +5824,7 @@ git push origin main --tags
 
 - [ ] **Step 4: Consumer notes (hand to each application's maintainer; not done in this repo)**
   - Recording application: Task 29 (R1–R7).
-  - QEEG analysis application: add `open-eeg-synth[edf] @ git+https://github.com/peak-mind-llc/open-eeg-synth.git@v0.2.0` to its Python dependencies; in its PyInstaller spec add `open_eeg_synth` to the collected packages **and** to the set of first-party packages whose absence fails the build, and add `collect_data_files("open_eeg_synth")`; verify the bundle contains both `.npz` files and both notices. Its practice-case builder then calls `make_case(resting_case(seed, plants=…))` → `write_case(...)`, reads truth with `read_case_truth`, and re-renders layers for grading with `render_layers`.
+  - QEEG analysis application: add `open-eeg-synth[edf] @ git+https://github.com/peak-mind-llc/open-eeg-synth.git@v0.2.0` to its Python dependencies; in its PyInstaller spec add `open_eeg_synth` to the collected packages **and** to the set of first-party packages whose absence fails the build, and add `collect_data_files("open_eeg_synth")`; verify the bundle contains both `.npz` files and both notices. Its practice-case builder then calls `make_case(resting_case(seed, plants=…))` → `write_case(...)`, reads truth with `read_case_truth`, and re-renders layers for grading with `casefile.writer.render_layers`.
 
 **M7 acceptance:** CI green on all three Pythons; `pytest -m realism` green (or its documented Laplacian gap); tag `v0.2.0` pushed; `pip install "open-eeg-synth[edf] @ git+https://github.com/peak-mind-llc/open-eeg-synth.git@v0.2.0"` in a fresh venv followed by `python -m open_eeg_synth make-case --seed 1 --out /tmp/x` works with no MNE installed.
 
@@ -5724,4 +5834,35 @@ git push origin main --tags
 
 - **Spec coverage.** DESIGN §2 layer model → Tasks 6, 20; §3 head model file/export/subsets/perturbation → Tasks 2–4; §4.1–4.5 background/network/rhythm/plants/timeline → Tasks 7–11, 21–22; §5.1–5.4 contract/scheduling/transform/registry → Tasks 13, 19; §5.5 patterns → Task 14; §5.6 blink/eye/EMG → Tasks 16–18; §5.7 future plug-ins → accommodated by base classes (no task; by design); §6 empirical maps + attribution → Task 15; §7.1–7.2 engine/case/subject → Tasks 6, 12; §7.3 streaming → Tasks 27–28; §7.4–7.5 case files/truth/CLI → Tasks 24–26; §8 determinism/versioning/performance → chunk-invariance tests in Tasks 5–8, 10–11, 13, 20, 28, golden Task 34, perf Task 12; §9 realism + fast tests → Tasks 30–32 and every task's tests; §10 packaging/CI/consumption → Tasks 1, 33, 35, 29.
 - **Placeholders.** None: every step has its code or its exact command; the two "tune" steps (12.5, 32.3) state the knobs, the order, the stopping rule and the acceptance numbers.
-- **Type consistency.** `RenderContext` fields (Task 13) match every `bind` call (Tasks 12, 16–19, 28); `Recording` fields (Task 6) match `make_case` (12), `case_truth` (25), `write_edf` (24); `RhythmSpec` fields (10) match `resting_brain` (11) and `apply_modifiers` (21); `StreamSource` constructor (28) matches the recorder factory (29); `Event.from_pattern` (13) is what Tasks 16–17 call; `EventArtifact.__init__` keyword names (`rate_by_state`, `min_gap_s`, `exclusive`) are what `params()` reflects and what Task 20's specs pass.
+- **Type consistency.** `RenderContext` fields (Task 13) match every `bind` call (Tasks 12, 16–19, 28); `Recording` fields (Task 6) match `make_case` (12), `case_truth` (25), `write_edf` (24); `RhythmSpec` fields (10) match `resting_brain` (11) and `apply_modifiers` (21); `BrainLayer(…, case_seed, condition, rows)` (11) matches `make_engine` (12); the `Transform` protocol's `name` (6) is what `TransformArtifact` (13) provides; `StreamSource` constructor (28) matches the recorder factory (29); `Event.from_pattern` (13) is what Tasks 16–17 call; `EventArtifact.__init__` keyword names (`rate_by_state`, `min_gap_s`, `exclusive`) are what `params()` reflects and what Task 20's specs pass.
+
+---
+
+## Revisions applied 2026-09-16
+
+Pre-flight rulings P1–P18 (see `.superpowers/sdd/PLAN/progress.md`) plus two coordinator requests (R1, D1) and three uncovered pre-flight defects (D19, D20 from `preflight.md`; the ruff formatting note). Every changed code block was re-run in a scratch tree against its task's tests: 91 of 91 plan tests pass (fast set, case files, stream, golden, perf, realism smoke); the realism test itself waits for Task 12's calibration.
+
+- P1 → Task 1: `_version.py` is renamed to `version.py` (`git mv`), `SIGNAL_VERSION` added, `[tool.hatch.version] path` and the `__init__` import updated; Step 1 no longer says "confirm `version.py` exists".
+- P2 → Task 9: `StateTimeline` is a frozen dataclass (`segments`, `ramp_s`) with value equality; its round-trip test now asserts `back == tl`. (Tasks 12, 20, 23 round-trip tests unchanged and now pass.)
+- P3 → Tasks 4, 11, 12, 28: `make_subject` places patches on the full head and records `rows`; `BrainLayer(…, rows=)` renders the full head and returns the recorded rows; `make_engine` subsets only for artifacts and the sensor layer; `HeadModel.perturbed` skips the scalp blur for one channel (draw still consumed) and Task 4 gains a one-channel test; Task 28's interface says any label set works.
+- P4 → Tasks 30, 31, 32: `measure.py` reads the dense connectivity as `(M + Mᵀ)/2` over the upper triangle (the feasibility test's exact reading; half the magnitude coherence / dwPLI because mne-connectivity fills one triangle); Task 31's expected percentiles are the feasibility test's to three decimals; Task 32 states what the uncalibrated recipe scores and which knobs move dwPLI.
+- P5 → Task 5: `welch` shortens `nperseg` to the input length, so `band_power` works on per-second windows (Task 18's burst test no longer crashes).
+- P6 → Tasks 16, 15: `Blink.waveform` normalised to unit peak on the sampled grid; the blink test's posterior factor is 4 (one bound, `|O1| < 0.25`, in both tasks).
+- P7 → Task 15: heog time-course threshold 0.4 (25 of 30 subjects clear it; 0.2 kept 4 of 20); download failure stops at the subjects on disk; subjects 1–30 stay the default (21–30 downloaded in about a minute here); the file test asserts `n_subjects >= 15` and `heog_sd.max() < HEOG_SD_MAX` with `HEOG_SD_MAX = 0.45` — the ruled 0.35 cannot be met: the derived map's spread is 0.40 over 17 subjects and 0.42 over 30, so 0.35 would fail regardless of subject count (DESIGN §6.3 now states 0.45 for heog, 0.35 for blink).
+- P8 → Tasks 11, 12, 21: brain-amplitude assertions are made after average referencing with provisional bands; Task 12 Step 5 states the measured starting point (Cz 21 µV, O1 share 0.35) and pins Task 11's bands after calibration; the bursts test uses per-second theta power at Fz after average referencing.
+- P9 → Task 13: the scheduler is the thinned Poisson process of DESIGN §5.2 (candidates at `rate_max`, pushes instead of refractory re-draws); `truth()` lists events inside the rendered span; the rate test uses 1/s × 0.1 s events with the band 18–45; the gap and exclusivity tests use rates whose busy fraction stays below one.
+- P10 → Task 27: heart chunk-invariance asserted with `atol=1e-3`.
+- P11 → Task 28: posterior dominance asserted on eyes-closed, artifact-free streams, after average referencing, as a median over three seeds (> 2×); ECG checks unchanged. Task 28/29 note the common-reference component for the recorder's live view.
+- P12 → Tasks 12, 13, 20 and the milestone table: Task 13 runs before Task 12 (title, M2/M3 rows, unit order line); the interim import shuffle is deleted; `case.py` imports `open_eeg_synth.artifacts` at module top from Task 12; Task 20 no longer touches `case.py`.
+- P13 → Task 2: zero-length source normals (3 of 4871) get the outward radial direction, recorded in the attribution string; the fixed-vs-free check excludes them; the unit-normal test stands.
+- P14 → global constraints, Task 1, Task 33 and every task: `ruff>=0.6`, `addopts = "-ra -m …"`, repo CI action versions (`@v7`) and rule set (`E,F,W,I,B,UP`) kept, per-file ignores limited to `tests/realism/*` and `scripts/*` (E402); Task 33 runs before Tasks 30–32 (M7 row); every "verify they pass" step now ends with `ruff check . && ruff format --check .` (30 steps).
+- P15 → Tasks 6, 13: the Engine keys transform layers by the artifact's `name` (`transform:<kind>` or `transform:<kind>#<i>`); `TransformArtifact.name` added; the Task 6 test transform carries a `name`.
+- P16 → Tasks 2, 26, 34, 35: `pyproject` sdist include gains `scripts` (Task 2); `casefile.writer` re-exports `render_layers`; Task 34 appends to the existing `CONTRIBUTING.md`; Task 35's consumer note names `casefile.writer.render_layers`.
+- P17 → Tasks 11, 12 and the global constraints: the brain sub-layers are seeded from `<condition>:background`, `<condition>:network`, `<condition>:rhythm:<name>` exactly as DESIGN §8.1 lists (no `<condition>:brain` spawn); DESIGN §4.3 documents the per-patch 0.3 Hz offset.
+- P18 → Task 1 pyproject and the tech-stack line: `mne>=1.6,<1.14` in the `realism` and `dev` extras.
+- R1 → Task 21: `FocalSlow` and `RhythmicBursts` accept `state_gain` (passed through to their `RhythmSpec`, carried in the record's `params`); new test `test_plant_state_gain_silences_a_plant_by_state`.
+- D1 → Task 1 Step 1: classic modules named correctly (`synth.py`, `cardio.py`, `oddball.py`; no `mock_rr.py`/`impedance.py`).
+- D19 (preflight) → Task 21: `PlantRecord.to_dict` converts tuples in `params` to lists so a truth file round-trips for every primitive.
+- D20 (preflight) → Task 22: the alpha-peak shift is measured on a Welch spectrum, not a raw periodogram.
+- Setup ruling → Task 35: Step 3 stops after the version commit; tag/release/merge wait for review.
+- Formatting → global constraints: code blocks are not pre-formatted; `ruff format .` runs before each green step.

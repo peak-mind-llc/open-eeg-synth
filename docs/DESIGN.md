@@ -97,7 +97,9 @@ src/open_eeg_synth/
     truth.py             truth dict, sealed container read/write, layer verification
     writer.py            write_case(), read_case_truth()
   __main__.py            `python -m open_eeg_synth make-case …`
-  classic/               v0.1.x synthesizer, untouched (synth.py, mock_rr.py, oddball.py, impedance.py)
+  classic/               v0.1.x synthesizer, untouched: synth.py (RealisticEEGSynthesizer, MarkerSchedule),
+                         cardio.py (MockRRSource, MockEcgSource, MockAccSource), oddball.py (OddballParadigm,
+                         schedule, ErpInjector — seeded, carries responses across chunk boundaries)
 scripts/
   export_head_model.py          dev-only (MNE): forward solution → colin27_19ch.npz
   derive_artifact_patterns.py   dev-only (MNE): PhysioNet ICA → eog_patterns.npz
@@ -137,7 +139,7 @@ closer than 5 mm to the inner skull dropped). The script reads the forward solut
 | `channel_names` | `<U4` | (19,) | `CHANNELS_19` order |
 | `electrode_pos` | float32 | (19, 3) | electrode positions, metres, head frame |
 | `source_pos` | float32 | (4871, 3) | cortical source positions, metres |
-| `source_normal` | float32 | (4871, 3) | cortical-patch-statistics normals (unit vectors) |
+| `source_normal` | float32 | (4871, 3) | cortical-patch-statistics normals (unit vectors; the 3 sources whose patch normal is undefined in the source solution carry the outward radial direction instead, as the `attribution` string records) |
 | `gain_free` | float32 | (19, 4871, 3) | free-orientation lead field, V/(A·m), x/y/z components |
 | `hemisphere` | int8 | (4871,) | 0 = left (first 2472 rows), 1 = right |
 | `bem_conductivity` | float32 | (3,) | `[0.3, 0.006, 0.3]` |
@@ -202,7 +204,9 @@ def load_head_model(name: str = "colin27_19ch") -> HeadModel
 ```
 
 **Channel subsets.** `subset(labels)` canonicalises each label (`channels.canonical_label`) and selects
-rows of `electrode_pos` and `gain_free`; the source side is untouched. Unknown labels raise
+rows of `electrode_pos` and `gain_free`; the source side is untouched. Cortical patches are always placed
+on the full model (a patch under Fz exists whether or not Fz is recorded), and a subset only chooses
+which rows are rendered, so one seed gives one brain under every montage. Unknown labels raise
 `UnknownChannelError` naming the available labels. Non-EEG labels (`HR`, `ECG`, `EKG`) are handled by
 the stream layer, never by the head model. Larger channel sets are a later export of the same shape
 (`colin27_31ch.npz`, `colin27_37ch.npz`); `load_head_model` picks by name, and a `channels` argument on
@@ -325,7 +329,9 @@ Time course of the driver and of each patch's own component: instantaneous frequ
 around `f0` (σ `f_sd`, τ `f_tau_s`), the envelope is `exp` of an OU process around 0 (σ `env_sd`, τ
 `env_tau_s`) clipped to `[env_lo, env_hi]`, phase is the cumulative sum of frequency. Both OU processes
 use the exact discretisation `x[n] = μ + a (x[n−1] − μ) + σ√(1−a²) w[n]`, `a = exp(−1/(τ fs))`, and
-start from their stationary distribution, so there is no warm-up transient.
+start from their stationary distribution, so there is no warm-up transient. Each patch's own component
+is centred at `f0 + N(0, 0.3 Hz)`, drawn once per patch when the rhythm is built — the small spread the
+feasibility test used so that patches are not perfectly locked to one frequency.
 
 Region placement (used by alpha): candidates are sources with `y` below its 12th percentile and `z`
 above its 30th percentile (occipito-parietal); `n_patches/2` are drawn from the left half and mirrored.
@@ -369,12 +375,16 @@ class PlantRecord:
 
 | primitive | signal | example (feasibility test) |
 |---|---|---|
-| `FocalSlow(site, f0_hz=2.5, amp_uv=45, width_mm=12, f_sd=0.4, env_tau_s=1.5, env_sd=0.6, indep=0.3)` | a slow rhythm from one patch under one site, own driver | focal delta under a left frontal-temporal site |
-| `RhythmicBursts(sites, f0_hz=6.5, amp_uv=30, width_mm=15, burst_s=(1, 3), gap_s=(8, 25))` | a rhythm gated on and off in bursts (`BurstGate`, 0.3 s ramps) | frontal midline theta bursts |
+| `FocalSlow(site, f0_hz=2.5, amp_uv=45, width_mm=12, f_sd=0.4, env_tau_s=1.5, env_sd=0.6, indep=0.3, state_gain={})` | a slow rhythm from one patch under one site, own driver | focal delta under a left frontal-temporal site |
+| `RhythmicBursts(sites, f0_hz=6.5, amp_uv=30, width_mm=15, burst_s=(1, 3), gap_s=(8, 25), state_gain={})` | a rhythm gated on and off in bursts (`BurstGate`, 0.3 s ramps) | frontal midline theta bursts |
 | `LateralImbalance(rhythm, side, factor)` | multiplies the patches of one hemisphere of a base rhythm | alpha ×0.6 on the left |
 | `WidespreadExcess(rhythm, factor, extra_sites=())` | scales a base rhythm, optionally adding patches under more sites | theta ×2.2 everywhere |
 | `PeakShift(rhythm, shift_hz)` | moves a base rhythm's centre frequency | alpha −1.5 Hz |
 | `ReducedRhythm(rhythm, factor)` | scales a base rhythm down | sensorimotor rhythm ×0.2 |
+
+`state_gain` on the two rhythm-creating primitives is passed through to the `RhythmSpec` they compile to,
+so a consumer can confine a plant to some states (`{"eyes_open": 0.0}` plants it eyes-closed only); the
+`PlantRecord.params` carry it.
 
 The feasibility test showed one plant can register as several findings in a consumer's catalogue,
 sometimes at a neighbouring site — that mapping (plant → set of findings) lives in the consumer.
@@ -621,9 +631,11 @@ For subjects 1–30, runs 1 and 2: read, `eegbci.standardize`, rename `T7/T8/P7/
   `(Fp1, Fp2, AF3, AF4, AF7, AF8 = 1; F3, Fz, F4 = 0.4; rest 0)` and whose time course has excess
   kurtosis > 5 (blinks are sparse). Sign-align so the mean at Fp1/Fp2 is positive.
 - **heog**: the component whose topography correlates best with the prior `(F7, AF7 = −1; F8, AF8 = +1;
-  Fp1 = −0.5; Fp2 = +0.5)` and whose time course has less than 20 % of its power above 5 Hz.
+  Fp1 = −0.5; Fp2 = +0.5)` and whose time course has less than 40 % of its power above 5 Hz (after the
+  1 Hz high-pass a 20 % bound keeps only 4 of the first 20 subjects; 40 % keeps 17, and 25 of 30).
   Sign-align so `F8 − F7 > 0`.
-- A subject with no component clearing both criteria is skipped and logged.
+- A subject with no component clearing both criteria is skipped and logged. If a subject cannot be
+  downloaded the script stops at the subjects already on disk.
 
 Normalise each map to max |1|, average across subjects, keep the per-channel standard deviation.
 
@@ -634,7 +646,8 @@ subject (kept in the repo for reproducibility).
 
 Fast tests on the shipped file: Fp1 and Fp2 are the two largest entries of `blink_mean`, every frontal
 entry is positive, |O1|, |O2| < 0.25; `heog_mean` has `sign(F7) = −sign(F8)` and those two are the
-largest magnitudes; standard deviations are below 0.35 everywhere.
+largest magnitudes; `blink_sd` is below 0.35 everywhere and `heog_sd` below 0.45 (measured 0.22 and 0.42
+over 30 subjects; the heog map varies more between people than the blink map does).
 
 ### 6.4 Attribution
 
@@ -698,7 +711,8 @@ class Recording:
 ```
 
 Layer names: `"brain"`, `"artifact:<kind>"` (`"artifact:<kind>#<i>"` when a kind appears more than
-once), `"sensor"`, `"transform:<kind>"`. The identity `mixed == Σ layers` is a tested invariant.
+once), `"sensor"`, `"transform:<kind>"` (`"transform:<kind>#<i>"` likewise; the engine keys every
+artifact layer, additive or transform, by the instance's own layer name). The identity `mixed == Σ layers` is a tested invariant.
 
 ### 7.2 Case specification and subject
 
@@ -914,6 +928,13 @@ consumer code):
   power at O1, Fz, Cz; per-channel RMS after 1–45 Hz filtering and average reference.
 - Preparation: 1–45 Hz band-pass, `standard_1020` montage, average reference, 4 s epochs, epochs with
   peak-to-peak > 800 µV dropped, at least 8 epochs.
+- Method, exactly as the feasibility test ran it: `spectral_connectivity_epochs(epochs,
+  method=["wpli2_debiased", "coh"], fmin=[1, 4, 8, 13], fmax=[4, 8, 13, 30], faverage=True)` on the 4 s
+  fixed-length epochs, dense output read as `(M + Mᵀ)/2` over the upper triangle. mne-connectivity fills
+  one triangle, so every coherence and dwPLI figure in this section is one half of the magnitude coherence
+  / debiased wPLI — the same reading the consuming application's electrode-connectivity code makes. The
+  reference file and the synthetic side share this convention (the rebuilt reference reproduces the
+  feasibility test's percentiles to 0.002); do not square or re-read the triangle on one side only.
 
 **Reference**: PhysioNet eegmmidb subjects 1–20, runs 1 (eyes open) and 2 (eyes closed), blink
 components removed by ICA (fastica, 15 components, `find_bads_eog` on Fp1/Fp2 at threshold 3).
@@ -992,8 +1013,8 @@ dependencies = ["numpy>=1.24", "scipy>=1.10"]
 
 [project.optional-dependencies]
 edf = ["edfio>=0.4"]
-realism = ["mne>=1.6,<2", "mne-connectivity>=0.6"]
-dev = ["pytest>=7.0", "ruff>=0.4", "edfio>=0.4", "mne>=1.6,<2", "mne-connectivity>=0.6"]
+realism = ["mne>=1.6,<1.14", "mne-connectivity>=0.6"]   # <1.14: the standard_1020 montage name goes away
+dev = ["pytest>=7.0", "ruff>=0.6", "edfio>=0.4", "mne>=1.6,<1.14", "mne-connectivity>=0.6"]
 
 [tool.hatch.version]
 path = "src/open_eeg_synth/version.py"
@@ -1052,6 +1073,8 @@ Each with the recommendation the plan adopts.
 7. **Evoked responses in streaming mode** (a recording application's oddball mock injects a P300 at
    markers). Recommendation: v0.2.0 ships markers only; an `EvokedResponse` brain primitive (marker
    time → patch response) is a v0.3 item, at which point the standalone oddball mock can move over.
+   `classic.oddball.ErpInjector` (seeded, carries a response across chunk boundaries) is the starting
+   point for that primitive.
 8. **Drowsiness beyond rhythm gains** (vertex sharp transients, sleep spindles, K-complexes).
    Recommendation: out of scope for v0.2.0; they are `EventArtifact`-shaped brain primitives and can
    be added without engine changes.
