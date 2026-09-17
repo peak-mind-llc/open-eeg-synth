@@ -229,7 +229,7 @@ class HeadModel:
 
 def load_head_model(name: str = "colin27_19ch") -> HeadModel             # cached per name
 def head_model_channels(name: str = "colin27_19ch") -> tuple[str, ...]  # channel names only
-def all_head_model_channels() -> tuple[str, ...]                        # every shipped model's names (§4.4)
+def all_head_model_channels() -> tuple[str, ...]  # all shipped models' names (§4.4)
 ```
 
 `load_head_model` and `head_model_channels` raise `ValueError` listing the head models that ship
@@ -529,7 +529,8 @@ class PlantRecord:
     amp_uv: float | None                     # None for a modifier-only plant
     onset_s: float                           # 0.0: plants are present for the whole recording
     offset_s: float | None                   # None
-    params: dict                             # the plant's own fields, JSON-safe (a modifier's target rhythm is params["rhythm"]; a bursting plant adds "bursts_s")
+    params: dict                             # the plant's own fields, JSON-safe (a modifier's target rhythm is params["rhythm"])
+                                             # plus "bursts_s" for a bursting plant
     description: str                         # generic prose
 ```
 
@@ -568,9 +569,9 @@ subject is drawn. Two spellings of one site in one list raise `ValueError`, and 
 `placement.placed_centres` when handed such a list. Because both lists are canonical,
 `apply_modifiers` recognises a site the rhythm already has: `WidespreadExcess("theta", 1.0,
 extra_sites=("f3",))` adds no patch and leaves theta unchanged (it used to add a second patch under
-F3). Canonical spellings are unchanged, so existing case ids do not move. Plant kinds register by `kind` (`register_plant`; a
-second class with the same kind raises); a spec's plants round-trip through JSON as `{kind, params}`,
-and an unknown kind raises `ValueError` naming the known ones.
+F3). Canonical spellings are unchanged, so existing case ids do not move. Plant kinds register by
+`kind` (`register_plant`; a second class with the same kind raises); a spec's plants round-trip
+through JSON as `{kind, params}`, and an unknown kind raises `ValueError` naming the known ones.
 
 **State confinement.** `state_gain` on the two rhythm-creating primitives is passed through to the
 `RhythmSpec` they compile to, so a consumer can confine a plant to some states (`{"eyes_open": 0.0}`
@@ -583,12 +584,12 @@ that cannot be seen. A modifier-only plant is never left out.
 **Burst times.** A `RhythmicBursts` record carries the bursts it actually produced in that
 condition, as `params["bursts_s"]`: a list of `[on, off]` pairs in seconds, sorted, within the
 recording. The burst gate draws its on/off edges in order from the rhythm's time stream and keeps
-every edge it draws; an edge's time is the sample where its 0.3 s ramp is half-way, and a burst still
-on at the end of the recording is cut there. `case.plant_records(spec, engine, condition)` builds a
-condition's plant records from what `engine` has rendered, so the intervals do not depend on how the
-rendering was chunked (tested with random partitions), and `render_layers` reproduces them. The
-intervals are the gate's; the plant's `state_gain` still scales the rhythm inside them. Each
-condition draws its own bursts.
+every edge it draws; an edge's time is the sample where its 0.3 s ramp is half-way, and a burst
+still on at the end of the recording is cut there. `case.plant_records(spec, engine, condition)`
+builds a condition's plant records from what `engine` has rendered, so the intervals do not depend
+on how the rendering was chunked (tested with random partitions), and `render_layers` reproduces
+them. The intervals are the gate's; the plant's `state_gain` still scales the rhythm inside them.
+Each condition draws its own bursts.
 
 The feasibility test showed one plant can register as several findings in a consumer's catalogue,
 sometimes at a neighbouring site — that mapping (plant → set of findings) lives in the consumer.
@@ -727,17 +728,17 @@ reproducible. The scheduler checks the rule on every build, including the rebuil
 push, and raises `ValueError` naming the plug-in's kind. Without the check, an event that did not
 start where the scheduler believed could keep colliding after every push and rebuild forever.
 
-**Scheduling** is a thinned Poisson process: candidate onsets are drawn at the maximum rate over states
-and accepted with probability `rate(state at t) / rate_max`. An accepted onset that falls inside the
-refractory gap of the previous event is pushed to the end of the gap, never dropped, so the nominal
-rate holds as long as `rate × (event length + gap)` stays well below one (§5.6 gives a busy case).
-Candidates are drawn in time order and each event's waveform is drawn at the moment it is scheduled,
-so the sequence of random draws does not depend on how the timeline is chunked (§8). `truth()` lists
-the events whose onset lies inside the span rendered so far (a pushed event may start later than its
-candidate). A record keeps the event's whole span: an event that starts near the end of a recording
-is cut there in the signal but not in its record, so its `offset_s` may lie past the recording's
-end, and a consumer clips it. Overlap of non-exclusive artifacts (a blink during a jaw clench) is allowed — that is
-realistic.
+**Scheduling** is a thinned Poisson process: candidate onsets are drawn at the maximum rate over
+states and accepted with probability `rate(state at t) / rate_max`. An accepted onset that falls
+inside the refractory gap of the previous event is pushed to the end of the gap, never dropped, so
+the nominal rate holds as long as `rate × (event length + gap)` stays well below one (§5.6 gives a
+busy case). Candidates are drawn in time order and each event's waveform is drawn at the moment it
+is scheduled, so the sequence of random draws does not depend on how the timeline is chunked (§8).
+`truth()` lists the events whose onset lies inside the span rendered so far (a pushed event may
+start later than its candidate). A record keeps the event's whole span: an event that starts near
+the end of a recording is cut there in the signal but not in its record, so its `offset_s` may lie
+past the recording's end, and a consumer clips it. Overlap of non-exclusive artifacts (a blink
+during a jaw clench) is allowed — that is realistic.
 
 **Exclusive artifacts** share one scheduler, the case's `Occupancy`. Each exclusive plug-in scheduling
 only up to its own block's end was not chunk-invariant: which of two plug-ins claimed a span first
@@ -757,12 +758,12 @@ the exclusive plug-ins that can still schedule (`rate_max > 0`), of the later of
 earliest possible next onset and its already-drawn next candidate. The candidate term matters: a
 plug-in that fires rarely, or only in a state the timeline never visits, would otherwise hold the
 watermark at its long-past last event and stall pruning for everyone. Pruning never changes a
-scheduling decision (tested against the same scenarios with pruning switched off), but it removes the
-history that a same-occupancy rebind relies on, so a rebind is refused with `ValueError` once any
-*other* participant's span has been pruned (a plug-in that only ever pruned its own spans still
-rebinds). The `Occupancy` tells participants apart by identity, never by equality, both in its list of
-registered participants and in its record of pruned ones, so two value-equal dataclass plug-ins are
-two participants that both schedule and never overlap.
+scheduling decision (tested against the same scenarios with pruning switched off), but it removes
+the history that a same-occupancy rebind relies on, so a rebind is refused with `ValueError` once
+any *other* participant's span has been pruned (a plug-in that only ever pruned its own spans still
+rebinds). The `Occupancy` tells participants apart by identity, never by equality, both in its list
+of registered participants and in its record of pruned ones, so two value-equal dataclass plug-ins
+are two participants that both schedule and never overlap.
 
 None of the built-in plug-ins is exclusive, so a default case or stream never commits a span (a
 30-minute default stream ends with none). Two limits remain, neither reachable with the built-in
@@ -789,11 +790,12 @@ def discover() -> None                      # loads entry points in group "open_
 
 Built-in plug-ins register on import of `open_eeg_synth.artifacts`. Third-party packages add
 `[project.entry-points."open_eeg_synth.artifacts"] mykind = "mypkg.module:MyArtifact"`. A `CaseSpec`
-refers to artifacts by kind and parameter dict (`ArtifactSpec(kind, params)`), which is what the truth
-file stores. `register` refuses a class that does not define its own `kind` (inheriting one would
-silently replace the parent kind). `discover` tries each entry point once; a broken one is skipped
-without blocking the rest, warned about on every call, and named in the `ValueError` that
-`make_artifact` raises for an unknown kind (the error lists the known kinds). `make_subject` forwards each such warning once per process rather than once per case.
+refers to artifacts by kind and parameter dict (`ArtifactSpec(kind, params)`), which is what the
+truth file stores. `register` refuses a class that does not define its own `kind` (inheriting one
+would silently replace the parent kind). `discover` tries each entry point once; a broken one is
+skipped without blocking the rest, warned about on every call, and named in the `ValueError` that
+`make_artifact` raises for an unknown kind (the error lists the known kinds). `make_subject`
+forwards each such warning once per process rather than once per case.
 
 ### 5.5 Where scalp patterns come from
 
@@ -1175,12 +1177,12 @@ class SensorSpec: white_uv: float = 1.5
 
 @dataclass(frozen=True)
 class ArtifactSpec: kind: str; params: dict = field(default_factory=dict)   # params kept as JSON reads them back
-    def identity(self) -> dict           # params with every non-bool number as a float: equality, hash, digest
+    def identity(self) -> dict           # non-bool numbers as floats; equality, hash, digest
 
 @dataclass(frozen=True)
 class ConditionSpec:
     name: str                          # "eyes_closed", "eyes_open", … (also the truth/file key)
-    duration_s: float                  # whole seconds for a case; inf only for a stream's (serialised as null)
+    duration_s: float                  # whole seconds; inf only for a stream (serialised as null)
     timeline: StateTimeline
 
 @dataclass(frozen=True)
@@ -1218,7 +1220,7 @@ def compiled_rhythms(spec: CaseSpec) -> tuple[RhythmSpec, ...]                  
 def make_subject(spec: CaseSpec) -> Subject
 def make_engine(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Engine
 def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Recording
-def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> list[PlantRecord]   # §4.4
+def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> list[PlantRecord]
 def make_case(spec: CaseSpec) -> Case
 def case_id_for(spec: CaseSpec) -> str
 
@@ -1230,25 +1232,24 @@ class Case:
     recordings: dict[str, Recording]     # by condition name
 ```
 
-**Spec identity.** A spec's identity is its canonical JSON (sorted keys, compact separators, no NaN),
-so specs that compare equal must serialise identically. On construction every spec dataclass
+**Spec identity.** A spec's identity is its canonical JSON (sorted keys, compact separators, no
+NaN), so specs that compare equal must serialise identically. On construction every spec dataclass
 normalises its scalar fields to plain Python types (`_canon.canonical_fields`): an int given for a
 float field becomes a float (`duration_s=8` and `duration_s=8.0` give one digest), numpy scalars are
-accepted, and wrong types raise `TypeError` — a string for a number (`fs="256"`), anything but a real
-`bool` for a bool field (`perturb_head="false"` is truthy), a bool for an int (`seed=True`). `CaseSpec`
-also canonicalises its channels against the selected head model's own channel list
+accepted, and wrong types raise `TypeError` — a string for a number (`fs="256"`), anything but a
+real `bool` for a bool field (`perturb_head="false"` is truthy), a bool for an int (`seed=True`).
+`CaseSpec` also canonicalises its channels against the selected head model's own channel list
 (`head_model_channels`), so aliases and letter case give the same spec, digest and case id (`T7` and
 `t3` are both `T3`); it rejects channels that collapse to one name (`("T3", "t7")`) and duplicate
 condition names. A bare `CaseSpec(seed=s)` equals `recipes.resting_case(s)`, digest included. An
 `ArtifactSpec`'s `params` are the plug-in's constructor arguments and are kept exactly as JSON reads
 them back, so a plug-in receives what was given (the built-ins coerce their numbers themselves). The
-spec's identity reads them through `ArtifactSpec.identity()`, where every number that is not a bool is
-a float: equality, hash and `CaseSpec.digest` all use that form, so `{"rms_median_uv": 50}` and
+spec's identity reads them through `ArtifactSpec.identity()`, where every number that is not a bool
+is a float: equality, hash and `CaseSpec.digest` all use that form, so `{"rms_median_uv": 50}` and
 `{"rms_median_uv": 50.0}` (or a numpy scalar) are one spec with one case id, while `{"flag": True}`
-and `{"flag": 1}` stay two specs with two ids (a bool stays a bool). Specs whose artifact numbers were
-already floats keep their digests.
-`case_id_for(spec)` is `"synth-"` followed by the 8 hex characters of a 4-byte blake2b digest of
-`"<seed>:<spec digest>"`.
+and `{"flag": 1}` stay two specs with two ids (a bool stays a bool). Specs whose artifact numbers
+were already floats keep their digests. `case_id_for(spec)` is `"synth-"` followed by the 8 hex
+characters of a 4-byte blake2b digest of `"<seed>:<spec digest>"`.
 
 **Subject.** `make_subject` works on the full head model and draws, each from its own named stream
 (§8.1): the head perturbation (when `perturb_head`); for each compiled rhythm, its placement, its
@@ -1260,20 +1261,21 @@ them described nothing that was rendered, and not drawing from their streams mov
 Patches are placed under every 10-20 site whether or not the case records it, so a four-channel
 stream and a nineteen-channel case of the same seed share one brain.
 
-**One condition.** `make_engine` builds the brain layer on the full head (it returns only the recorded
-rows); every artifact from its `ArtifactSpec` through `make_artifact`, bound to the recorded subset of
-the head, with its time stream `<condition>:artifact:<kind>:<i>` (`i` counts instances of that kind
-only, so adding another kind never moves these draws), its kind's subject stream and one `Occupancy`
-shared by the condition; and the sensor layer. Additive artifacts become layers, transform artifacts
-transforms. `make_recording` renders `round(duration_s · fs)` samples and attaches the condition's
-timeline and its plant records (`plant_records`: the plants its timeline does not silence, a bursting
-plant with its burst times, §4.4). A case condition must last a
-positive whole number of seconds, because EDF records are whole seconds: anything else, including a
-non-finite `duration_s` (a whole recording needs an end, and an unbounded one is a stream, §7.3),
+**One condition.** `make_engine` builds the brain layer on the full head (it returns only the
+recorded rows); every artifact from its `ArtifactSpec` through `make_artifact`, bound to the
+recorded subset of the head, with its time stream `<condition>:artifact:<kind>:<i>` (`i` counts
+instances of that kind only, so adding another kind never moves these draws), its kind's subject
+stream and one `Occupancy` shared by the condition; and the sensor layer. Additive artifacts become
+layers, transform artifacts transforms. `make_recording` renders `round(duration_s · fs)` samples
+and attaches the condition's timeline and its plant records (`plant_records`: the plants its
+timeline does not silence, a bursting plant with its burst times, §4.4). A case condition must last
+a positive whole number of seconds, because EDF records are whole seconds: anything else, including
+a non-finite `duration_s` (a whole recording needs an end, and an unbounded one is a stream, §7.3),
 raises `ValueError` naming the condition (`case.check_case_duration`). `make_case` checks every
 condition before it draws the subject; `make_recording` checks its own before rendering. `make_case`
 calls `make_subject` once and `make_recording` for each condition; `casefile.truth.render_layers`
-calls the same `make_recording`, so a re-rendered condition cannot drift from what `make_case` wrote.
+calls the same `make_recording`, so a re-rendered condition cannot drift from what `make_case`
+wrote.
 
 `recipes.resting_case(seed, *, duration_s=240, plants=(), artifacts=None, drowsy_from_s=None,
 fs=256.0, channels=CHANNELS_19)` builds the common two-condition spec: eyes closed then eyes open,
@@ -1300,20 +1302,20 @@ class StreamSource:
 
 The constructor signature mirrors `classic.RealisticEEGSynthesizer(channel_labels, srate, *, seed,
 markers)` so a recording application swaps one import. Labels are split into heart labels (`HR`,
-`ECG`, `EKG`, in any letter case) and EEG labels. Every heart row carries the same `HeartSource` ECG,
-seeded from `stream:heart`: an R-wave of about 200 µV and RR intervals around a mean of 72 bpm with a
-2 bpm spread (the classic constants), plus respiratory sinus arrhythmia of ±40 ms at 5.5 breaths a
-minute and a 2 % wave at 0.1 Hz. Heart labels may repeat. Every other label is canonicalised against the
-head model's channels (`head_model_channels()`, the 19 of the 10-20 system), and two labels that
-collapse to one channel raise `ValueError`, as they do in a `CaseSpec`. A label the head model lacks
-does not raise, as it does not in `classic`: 10-10 sites such as `Fpz` and `Oz` are not projected in
-0.2.0, and neither are ear references such as `A1` or any other name. Each such label becomes an
-unmodelled row that carries sensor noise only (white noise at `sensor.white_uv`, drawn time-major
-from its own stream `stream:unmodelled`, so the modelled rows are exactly those of a source built
-without it); the source warns once at construction naming those labels and lists them, as given, in
-`unmodelled_labels`. Unmodelled labels may repeat, and each such row gets its own noise. The label
-list must not be empty, and `srate` must be finite and positive (a NaN or infinite rate used to fail
-deep inside the network wiring).
+`ECG`, `EKG`, in any letter case) and EEG labels. Every heart row carries the same `HeartSource`
+ECG, seeded from `stream:heart`: an R-wave of about 200 µV and RR intervals around a mean of 72 bpm
+with a 2 bpm spread (the classic constants), plus respiratory sinus arrhythmia of ±40 ms at 5.5
+breaths a minute and a 2 % wave at 0.1 Hz. Heart labels may repeat. Every other label is
+canonicalised against the head model's channels (`head_model_channels()`, the 19 of the 10-20
+system), and two labels that collapse to one channel raise `ValueError`, as they do in a `CaseSpec`.
+A label the head model lacks does not raise, as it does not in `classic`: 10-10 sites such as `Fpz`
+and `Oz` are not projected in 0.2.0, and neither are ear references such as `A1` or any other name.
+Each such label becomes an unmodelled row that carries sensor noise only (white noise at
+`sensor.white_uv`, drawn time-major from its own stream `stream:unmodelled`, so the modelled rows
+are exactly those of a source built without it); the source warns once at construction naming those
+labels and lists them, as given, in `unmodelled_labels`. Unmodelled labels may repeat, and each such
+row gets its own noise. The label list must not be empty, and `srate` must be finite and positive (a
+NaN or infinite rate used to fail deep inside the network wiring).
 
 Internally the source is one `CaseSpec` with a single condition named `"stream"` of unbounded duration
 (`duration_s = inf`, serialised as null), with the resting brain, the ordinary artifacts and the
@@ -1327,8 +1329,9 @@ and — unlike `classic`, which drew blinks per chunk — the samples do not dep
 `truth` grows with the stream: it lists every artifact event whose onset lies inside the span
 rendered so far (an event pushed later, past a refractory gap, appears once its onset is rendered),
 and nothing discards it (a default 19-channel stream at 256 Hz holds 196–261 events after 10 minutes
-and 650–708 after 30 over seeds 0–9, as the rates predict: about 220 and 660). A recording application that streams for hours should read it incrementally. The default artifacts are not exclusive, so the
-scheduler keeps no spans at all (§5.2).
+and 650–708 after 30 over seeds 0–9, as the rates predict: about 220 and 660). A recording
+application that streams for hours should read it incrementally. The default artifacts are not
+exclusive, so the scheduler keeps no spans at all (§5.2).
 
 `due_markers` follows `classic.MarkerSchedule` (kinds `"none"`, `"periodic"` and `"oddball"`; the
 default is `"none"`) and is called in lockstep with `next_chunk`. It reimplements the classic marker
@@ -1423,15 +1426,16 @@ condition's bursts in `params["bursts_s"]` (§4.4).
 `casefile.truth`), which rebuilds the subject from `spec` and renders the condition through
 `make_recording` (§7.2). If the truth file's `SIGNAL_VERSION` differs from this package's, it warns,
 naming both package versions; another package version with the same `SIGNAL_VERSION` makes the same
-samples and does not warn. It raises `ValueError` naming the condition when the spec has no such condition or the truth
-file has no recording for it. It raises `LayerMismatchError` when the re-rendered layer names differ
-from the truth file's `layers` list, or when a layer's per-channel RMS differs from `layer_rms_uv`
-beyond `rtol` (with an absolute allowance of 1e-3 µV), so a consumer never grades against the wrong
-layers. `embed_layers=True` writes `<case_id>.layers.npz` (keys `<condition>/<layer>`, float32
-`(n_ch, n_samples)`, plus `label` = `"synthetic"` like every other file the package writes) for
-archival or for consumers that cannot install the package version that made the case. A noise-like
-layer (brain, sensor) of a 240 s, 19-channel, 256 Hz condition compresses to about 4.3 MB, an artifact
-layer to much less; the default two-condition case writes 18.6 MB.
+samples and does not warn. It raises `ValueError` naming the condition when the spec has no such
+condition or the truth file has no recording for it. It raises `LayerMismatchError` when the
+re-rendered layer names differ from the truth file's `layers` list, or when a layer's per-channel
+RMS differs from `layer_rms_uv` beyond `rtol` (with an absolute allowance of 1e-3 µV), so a consumer
+never grades against the wrong layers. `embed_layers=True` writes `<case_id>.layers.npz` (keys
+`<condition>/<layer>`, float32 `(n_ch, n_samples)`, plus `label` = `"synthetic"` like every other
+file the package writes) for archival or for consumers that cannot install the package version that
+made the case. A noise-like layer (brain, sensor) of a 240 s, 19-channel, 256 Hz condition
+compresses to about 4.3 MB, an artifact layer to much less; the default two-condition case writes
+18.6 MB.
 
 ### 7.5 Command line
 
@@ -1502,15 +1506,30 @@ development without a bump, because no layered signal had been released that any
 from. From v0.2.0 on, every change to generated samples bumps it.
 
 A fingerprint test (`tests/test_golden_engine.py`) renders `recipes.resting_case(seed=20260916)` for
-10 s and compares, among other values, every channel's RMS and the first 32 samples of Fz in the
-eyes-closed recording with the values stored, rounded to 0.01 µV, in
-`tests/golden/resting_seed20260916.json`, within 0.05 µV. It fails when the signal changes while
-`SIGNAL_VERSION` stays the same, and passes without comparing when the version differs from the
-stored one. After a deliberate change, bump `SIGNAL_VERSION` and run `scripts/update_golden.py` in the
-same commit to regenerate the file. Both numbers are written into every truth file, and
-`render_layers` warns when `SIGNAL_VERSION` differs (§7.4). The `classic` subpackage keeps its own bit-exact
-golden test against the recording application's original output (`tools/make_classic_golden.py`
-records that fixture).
+20 s, long enough for the eyes-open recording's first jaw-EMG burst (at 17.6 s), and compares these
+values with `tests/golden/resting_seed20260916.json` (µV values rounded to 0.01 and compared within
+0.05; counts and onsets exactly):
+
+- eyes closed: every channel's RMS and the first 32 samples of Fz;
+- eyes open: the first 32 samples of Fz; the RMS of the blink layer at Fp1, the eye-movement layer
+  at F8 and the jaw-EMG layer at T3 and T4; and, per artifact kind, the event count and the first
+  event's onset and peak;
+- the eyes-open recording again with a dead O1 from 4 to 9 s: the RMS of the dead channel's
+  transform delta, and of O1 inside the dead span;
+- the eyes-closed F7 of the same case with `FocalSlow("F7")` planted.
+
+Halving the blink waveform or the jaw-EMG burst, zeroing any artifact kind's eyes-open rate, or
+changing the dead channel's delta or noise fails it. The 20 s eyes-closed recording holds no eye
+movement or jaw-EMG event, so those kinds' eyes-closed rates are not covered. The test fails when
+the signal changes while `SIGNAL_VERSION` stays the same, and when `SIGNAL_VERSION` differs from the
+stored one it fails too, before rendering, with "SIGNAL_VERSION changed: regenerate with
+scripts/update_golden.py", so a bump is never a silent pass. After a deliberate change, bump
+`SIGNAL_VERSION` and run `scripts/update_golden.py` in the same commit to regenerate the file; run
+it also when the test changes what it records (the test then reports that the fingerprint's contents
+changed). Both numbers are written into every truth file, and `render_layers` warns when
+`SIGNAL_VERSION` differs (§7.4). The `classic` subpackage keeps its own bit-exact golden test
+against the recording application's original output (`tools/make_classic_golden.py` records that
+fixture).
 
 ### 8.4 Performance budget
 
@@ -1639,8 +1658,9 @@ condition per subject, healthy young adults, 2009-era amplifiers.
 
 ### 9.2 Fast tests (`pytest`, run in CI)
 
-`pytest` runs the fast set: 334 tests in 65 s on the development machine under load, against a target
-of 60 s that the suite does not meet. The slowest tests render whole cases over several seeds, because
+`pytest` runs the fast set: 344 tests in 64–69 s on the development machine under load (two runs,
+alternating with the 335 tests of the previous revision, which took 64–66 s), against a target of
+60 s that the suite does not meet. The slowest tests render whole cases over several seeds, because
 a statistical check on a single seed can pass by luck; they are the candidates for shared fixtures or
 the `slow` marker if the suite grows. `pytest -m slow` runs three more (the performance budget, the
 realism smoke test and a FocalSlow spatial-specificity check), and `pytest -m realism` runs the
@@ -1654,33 +1674,33 @@ default case with `python -m open_eeg_synth make-case --seed 1` and re-renders i
 condition with `render_layers`. The realism suite runs weekly and on demand.
 
 What the fast set covers, per module: seeds (determinism, name independence, stability across
-processes); dsp (PSD slope and unit variance of the 1/f cascade at two sample rates and exponents, OU
-stationary sd, mean and lag-1 autocorrelation, chunk invariance of every filter, a tone near the new
-Nyquist passes decimation within 1 dB and images at and above it are 60 dB down); head model (file
-contents, fixed = free·normal, subsets, aliases, unknown head models, mirror sources, smoothing matrix,
-perturbation magnitude, determinism and one-channel heads); background and network (RMS, slope,
-measurable lag between coupled nodes, chunk invariance); rhythm (spectral peak at f0 at the target
-sites, mirror symmetry and polarity of maps, a cross-spectrum phase lag between mirror sites, the
-drowsy alpha peak shift, placement without shared sources, per-patch draws, burst times under
-random chunking); brain layer (calibration
-pins as medians over nine seeds, a visible theta imbalance, eyes-open alpha suppression, missing
-per-patch draws refused); timeline (weights sum to one, ramps, value equality, JSON with infinite
-ends); plants (each primitive changes band power at its sites by the expected factor, state
-confinement, names, validation, records, canonical sites); artifact framework (scheduling rates by state, the thinned
-process, refractory gap, exclusivity and the shared scheduler under random partitions and call
-orders, the onset rule, rebinding, span pruning against an unpruned control, registry and discovery);
-patterns (the T9/T10 reference and pinned map values, sign-keeping capped jitter, full-head
-amplitudes, the fallback's sign rule, reliability, blend and clip, mirror montages, continuity under
-small moves, a 3,000-request sparse sweep per map); plug-ins (each one's waveform, rates, truth
-contents and channels, subsets, jaw EMG placement and anti-aliasing, dead-channel spans); engine (sum
-identity, contiguity check, chunk invariance, buffer copies, read-only mix); case (defaults, identity
-and type strictness, artifact parameters as one identity, alias canonicalisation, duplicate channels
-and conditions, whole-second durations, subject shared across conditions, pattern jitter only for
-jittering kinds, JSON round trip, chunk invariance of layers, truth and plant records with artifacts,
-plants and drowsiness, drowsiness end to end); case files (EDF round trip in µV, no annotations, MNE read-back,
-anonymised date, clipping; truth container round trip and contents; `render_layers` verification and
-errors, burst times; `write_case` layout; the command line and its checks before building); stream
-(the recording application's contract: shape, dtype, RMS range, determinism, fresh seeds, 1/f slope,
+processes); dsp (PSD slope and unit variance of the 1/f cascade at two sample rates and exponents,
+OU stationary sd, mean and lag-1 autocorrelation, chunk invariance of every filter, a tone near the
+new Nyquist passes decimation within 1 dB and images at and above it are 60 dB down); head model
+(file contents, fixed = free·normal, subsets, aliases, unknown head models, mirror sources,
+smoothing matrix, perturbation magnitude, determinism and one-channel heads); background and network
+(RMS, slope, measurable lag between coupled nodes, chunk invariance); rhythm (spectral peak at f0 at
+the target sites, mirror symmetry and polarity of maps, a cross-spectrum phase lag between mirror
+sites, the drowsy alpha peak shift, placement without shared sources, per-patch draws, burst times
+under random chunking); brain layer (calibration pins as medians over nine seeds, a visible theta
+imbalance, eyes-open alpha suppression, missing per-patch draws refused); timeline (weights sum to
+one, ramps, value equality, JSON with infinite ends); plants (each primitive changes band power at
+its sites by the expected factor, state confinement, names, validation, records, canonical sites);
+artifact framework (scheduling rates by state, the thinned process, refractory gap, exclusivity and
+the shared scheduler under random partitions and call orders, the onset rule, rebinding, span
+pruning against an unpruned control, registry and discovery); patterns (the T9/T10 reference and
+pinned map values, sign-keeping capped jitter, full-head amplitudes, the fallback's sign rule,
+reliability, blend and clip, mirror montages, continuity under small moves, a 3,000-request sparse
+sweep per map); plug-ins (each one's waveform, rates, truth contents and channels, subsets, jaw EMG
+placement and anti-aliasing, dead-channel spans); engine (sum identity, contiguity check, chunk
+invariance, buffer copies, read-only mix); case (defaults, identity and type strictness, artifact
+parameters as one identity, alias canonicalisation, duplicate channels and conditions, whole-second
+durations, subject shared across conditions, pattern jitter only for jittering kinds, JSON round
+trip, chunk invariance of layers, truth and plant records with artifacts, plants and drowsiness,
+drowsiness end to end); case files (EDF round trip in µV, no annotations, MNE read-back, anonymised
+date, clipping; truth container round trip and contents; `render_layers` verification and errors,
+burst times; `write_case` layout; the command line and its checks before building); stream (the
+recording application's contract: shape, dtype, RMS range, determinism, fresh seeds, 1/f slope,
 posterior-dominant alpha, ECG only on heart labels, duplicate labels, labels outside the head model,
 non-finite rates, other label sets at 250 and 500 Hz, chunk invariance, markers, seed replay,
 per-call cost); the realism gap matcher; the golden fingerprint; the `classic` golden test, and that
@@ -1726,9 +1746,9 @@ addopts = "-ra -m 'not realism and not slow'"   # markers: realism, slow
   IIR filters with carried state and polyphase anti-alias decimation are exactly what `scipy.signal`
   does robustly, both consumers already ship scipy, and the call sites (`lfilter`, `firwin`,
   `resample_poly`) are isolated in `dsp.py`; the truth file also records scipy's version. The
-  package root imports its engine exports (`StreamSource`, `make_case`, `write_case`, …) on first use
-  through a module `__getattr__`, so `import open_eeg_synth.classic` loads numpy only (tested in a
-  fresh interpreter: 0.02 s, against 0.35 s when the root imported the engine eagerly), and the
+  package root imports its engine exports (`StreamSource`, `make_case`, `write_case`, …) on first
+  use through a module `__getattr__`, so `import open_eeg_synth.classic` loads numpy only (tested in
+  a fresh interpreter: 0.02 s, against 0.35 s when the root imported the engine eagerly), and the
   first engine name costs the scipy import instead.
 - **Install by git tag**: `open-eeg-synth @ git+https://github.com/peak-mind-llc/open-eeg-synth.git@v0.2.0`
   (with `[tool.hatch.metadata] allow-direct-references = true` in the consumer if it builds with

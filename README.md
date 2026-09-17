@@ -76,8 +76,8 @@ a 2.5 Hz rhythm of about 45 uV from one cortical patch under F7, present through
 ```
 
 Rebuild layers with a package version of the same `SIGNAL_VERSION` as the one that made the case:
-`render_layers` warns when the signal versions differ, and raises `LayerMismatchError` if the rebuilt
-layers do not match the RMS values stored in the truth file.
+`render_layers` warns when the signal versions differ, and raises `LayerMismatchError` if the
+rebuilt layers do not match the RMS values stored in the truth file.
 
 Stream chunks, for example from a mock amplifier:
 
@@ -92,9 +92,9 @@ Chunks join without seams, and the samples do not depend on the chunk size. Buil
 about half a second; each 32-sample chunk then takes about half a millisecond. Heart-rate labels
 (`HR`, `ECG`, `EKG`) carry the ECG. A label outside the 19 channels of the 10-20 system, such as a
 10-10 site (`Fpz`, `Oz`) or an ear reference (`A1`), is accepted but not modelled in 0.2.0: its row
-carries sensor noise only, the source warns once, and `source.unmodelled_labels` lists those labels. `source.truth` lists
-the artifact events so far, and `source.due_markers(n)` returns event markers in step with the
-chunks.
+carries sensor noise only, the source warns once, and `source.unmodelled_labels` lists those labels.
+`source.truth` lists the artifact events so far, and `source.due_markers(n)` returns event markers
+in step with the chunks.
 
 Or write a resting case from the command line:
 
@@ -102,10 +102,10 @@ Or write a resting case from the command line:
 python -m open_eeg_synth make-case --seed 42 --out cases
 ```
 
-It prints the path of the truth file. `--duration` sets the length of each condition in whole seconds
-(default 240; EDF records are whole seconds, so `make_case` refuses anything else too), `--spec` reads
-a full case specification from JSON, `--embed-layers` also writes every
-layer to an `.npz` file, and `--print-truth` prints the truth as JSON instead of the path.
+It prints the path of the truth file. `--duration` sets the length of each condition in whole
+seconds (default 240; EDF records are whole seconds, so `make_case` refuses anything else too),
+`--spec` reads a full case specification from JSON, `--embed-layers` also writes every layer to an
+`.npz` file, and `--print-truth` prints the truth as JSON instead of the path.
 
 ## Data and attribution
 
@@ -212,7 +212,7 @@ scripts need MNE and are rerun only when their inputs change:
 | `scripts/export_head_model.py --forward <forward.fif> --name colin27_19ch` | the head model changes (another channel set or head) |
 | `scripts/derive_artifact_patterns.py --subjects 30 --data-path <dir>` | the eye-pattern derivation changes; downloads PhysioNet data on first run |
 | `scripts/build_realism_reference.py --subjects 20 --data-path <dir>` | `tests/realism/measure.py` changes, because real and synthetic data must be measured the same way |
-| `scripts/update_golden.py` | you change generated samples on purpose, in the same commit as a `SIGNAL_VERSION` bump |
+| `scripts/update_golden.py` | you change generated samples on purpose, in the same commit as a `SIGNAL_VERSION` bump, or the fingerprint test changes what it records |
 | `tools/make_classic_golden.py` | the classic engine's output is meant to change (rare) |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules.
@@ -221,9 +221,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules.
 
 `open_eeg_synth.__version__` is the package version. `open_eeg_synth.SIGNAL_VERSION` is an integer
 that changes whenever the same seed would produce different samples. Both are written into every
-truth file, and `render_layers` warns when a file was made under a different `SIGNAL_VERSION`. A fingerprint test
-fails if the samples change without a `SIGNAL_VERSION` bump. `SIGNAL_VERSION` 2 is the first released
-layered signal (v0.2.0).
+truth file, and `render_layers` warns when a file was made under a different `SIGNAL_VERSION`. A
+fingerprint test fails if the samples change, artifact layers included, without a `SIGNAL_VERSION`
+bump, and after a bump it fails until `scripts/update_golden.py` has regenerated its reference.
+`SIGNAL_VERSION` 2 is the first released layered signal (v0.2.0).
 
 ## The classic engine
 

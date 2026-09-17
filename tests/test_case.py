@@ -101,10 +101,10 @@ def test_unperturbed_head_when_asked():
 
 
 def test_make_subject_warns_once_per_process_about_a_broken_entry_point(monkeypatch):
-    """``discover()`` itself re-warns about a broken entry point on every call, by design (kept
-    as-is - see registry's own test_discover_warns_on_every_call_and_names_the_failure_in_the_
-    keyerror); but ``make_subject`` calling it once per case must not spam that same warning for
-    every case built in this process afterwards - only the first case should surface it."""
+    """``discover()`` itself re-warns about a broken entry point on every call, by design (see
+    test_discover_warns_on_every_call_and_names_the_failure_in_the_unknown_kind_error); but
+    ``make_subject`` calling it once per case must not spam that same warning for every case built
+    in this process afterwards - only the first case should surface it."""
     import open_eeg_synth.case as case_module
     from open_eeg_synth.artifacts import registry
 

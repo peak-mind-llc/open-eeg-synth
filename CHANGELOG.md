@@ -34,14 +34,16 @@ All notable changes to this project are documented here. The format follows
   number of seconds, as EDF records do. `python -m open_eeg_synth make-case` does the same from the
   command line, and checks for `edfio` and whole-second durations before building anything.
 - `StreamSource`: chunked, seamless output for a recording application's mock amplifiers, with the
-  classic synthesizer's constructor, an ECG on heart-rate labels, event markers and the artifact truth
-  so far. Like the classic synthesizer, it accepts labels outside the head model; in 0.2.0 those rows
-  (10-10 sites such as Fpz and Oz, ear references, anything else) carry sensor noise only, the
-  source warns once, and `StreamSource.unmodelled_labels` lists them.
+  classic synthesizer's constructor, an ECG on heart-rate labels, event markers and the artifact
+  truth so far. Like the classic synthesizer, it accepts labels outside the head model; in 0.2.0
+  those rows (10-10 sites such as Fpz and Oz, ear references, anything else) carry sensor noise
+  only, the source warns once, and `StreamSource.unmodelled_labels` lists them.
 - A realism suite (`pytest -m realism`) that compares the resting recipe with committed percentiles
   from PhysioNet recordings measured the same way, with two named known gaps.
-- `SIGNAL_VERSION` and a signal fingerprint test; both version numbers are written into every truth
-  file.
+- `SIGNAL_VERSION` and a signal fingerprint test that covers the brain, the artifact layers and
+  their events, a dead channel and a planted pattern; after a `SIGNAL_VERSION` change it fails until
+  `scripts/update_golden.py` has regenerated its reference. Both version numbers are written into
+  every truth file.
 - Data files and their notices: the head model (`NOTICE-colin27.txt`), and the eye-movement and blink
   patterns and realism reference derived from the PhysioNet EEG Motor Movement/Imagery Dataset
   (`NOTICE-eegmmidb.txt`).
