@@ -348,21 +348,34 @@ def test_empirical_fallback_with_no_channel_in_file_is_the_analytic_dipole(fake_
     centre, moment = patterns._FALLBACK["blink"]
     assert np.allclose(out, patterns.analytic_dipole(centre, moment, pos))
     assert out[0] < 0.0 and out[1] < 0.0 and abs(out[1]) < abs(out[0]) < 1.0
+    # 10 mm in front of the eyes the dipole is ~10x its template peak: clipped to the peak
+    near = np.array([[0.0, 0.095, -0.020], *pos])
+    assert patterns.analytic_dipole(centre, moment, near[:1])[0] > 5.0
+    out = patterns.empirical("blink", ["X1", "F9", "Oz"], electrode_pos=near, z=0.0)
+    assert out[0] == 1.0 and np.allclose(out[1:], patterns.analytic_dipole(centre, moment, pos))
 
 
-def test_empirical_fallback_uses_every_anchor_when_all_disagree_in_sign(real_eog):
+def test_empirical_fallback_never_uses_an_anchor_that_disagrees_in_sign(real_eog):
     """On the real blink map F7, T3 and T4 are positive where the dipole model is negative. With
-    only those three present, the sign filter has nothing to keep, so the fit uses all three."""
+    only those three present no anchor is usable, so A1 is exactly the analytic dipole (fix round
+    5). The rule it replaces fitted through all three and gave A1 +0.349; on the full montage of
+    the mirror tests A1 is negative (-0.107), and so is the dipole (-0.091)."""
     head = load_head_model()
     pos = dict(zip(CHANNELS_19, head.electrode_pos, strict=True))
     a1 = _EXTRA_POS[0]
     p = np.array([pos["F7"], pos["T3"], pos["T4"], a1])
     v = patterns.empirical("blink", ["F7", "T3", "T4", "A1"], electrode_pos=p, z=0.0)
-    envelope, cosine = patterns._dipole_terms(*patterns._FALLBACK["blink"], p)
+    names, full = _full("blink")
+    assert np.array_equal(v[:3], [full[names.index(c)] for c in ("F7", "T3", "T4")])
+    centre, moment = patterns._FALLBACK["blink"]
+    _, cosine = patterns._dipole_terms(centre, moment, p)
     assert np.all(np.sign(v[:3]) != np.sign(cosine[:3]))
-    dist = np.linalg.norm(p[:3] - a1, axis=1)
-    scale = patterns._fallback_scale(v[:3], envelope[:3], cosine[:3], dist, ["F7", "T3", "T4"])
-    assert np.isfinite(v[3]) and np.isclose(v[3], scale * envelope[3] * cosine[3])
+    assert v[3] == patterns.analytic_dipole(centre, moment, p[3:])[0]
+    chs = [*CHANNELS_19, *_EXTRA_CHANNELS]
+    montage = patterns.empirical(
+        "blink", chs, electrode_pos=np.vstack([head.electrode_pos, _EXTRA_POS]), z=0.0
+    )
+    assert v[3] < 0.0 and montage[chs.index("A1")] < 0.0
 
 
 def test_empirical_real_file_blink_peaks_frontal_heog_opposite_f7_f8(real_eog):
@@ -414,13 +427,25 @@ def test_empirical_fallback_mirror_symmetry_on_a_full_montage(real_eog):
 
 
 def test_empirical_fallback_af9_af10_heog_is_balanced(real_eog):
-    """The grid version put AF10 at 32x AF9 (a strong anchor won a distance tie on one side)."""
+    """The grid version put AF10 at 32x AF9 (a strong anchor won a distance tie on one side).
+    The smooth fit gives AF9 -1.119 and AF10 +1.296 (ratio 1.158); both lie beyond the file's
+    peak, so since fix round 5 both are clipped to it and the ratio is 1."""
     head = load_head_model()
     chs = [*CHANNELS_19, "AF9", "AF10"]
     pos = np.vstack([head.electrode_pos, _AF_POS["AF9"], _AF_POS["AF10"]])
     v = patterns.empirical("heog", chs, electrode_pos=pos, z=0.0)
     assert v[19] < 0.0 < v[20]
     assert 0.5 <= abs(v[20]) / abs(v[19]) <= 2.0
+    assert v[19] == -1.0 and v[20] == 1.0
+    centre, moment = patterns._FALLBACK["heog"]
+    envelope, cosine = patterns._dipole_terms(centre, moment, pos)
+    agree = [i for i in range(19) if np.sign(cosine[i]) == np.sign(v[i])]
+    labels = [CHANNELS_19[i] for i in agree]
+    for m, want in ((19, -1.119), (20, 1.296)):  # the fit before the clip
+        dist = np.linalg.norm(pos[agree] - pos[m], axis=1)
+        fit = patterns._fallback_scale(v[agree], envelope[agree], cosine[agree], dist, labels)
+        assert fit[1] == 1.0  # a fully reliable anchor is in the fit: no blend with the dipole
+        assert fit[0] * envelope[m] * cosine[m] == pytest.approx(want, abs=0.001)
 
 
 def test_empirical_fallback_recovers_a_disguised_in_file_channel(real_eog):
@@ -475,8 +500,8 @@ def test_fallback_scale_is_inverse_square_distance_weighted_least_squares():
     w = np.array([1.0, 0.25])
     y = values / envelope
     want = (w * cosine * y).sum() / (w * cosine**2).sum()
-    got = patterns._fallback_scale(values, envelope, cosine, dist, ["a", "b"])
-    assert np.isclose(got, want)
+    got, trust = patterns._fallback_scale(values, envelope, cosine, dist, ["a", "b"])
+    assert np.isclose(got, want) and trust == 1.0
     # with 1/d instead the answer would differ
     assert not np.isclose(got, (np.array([1.0, 0.5]) * cosine * y).sum() / (0.5 * 0.25 + 1.0))
 
@@ -489,10 +514,10 @@ def test_fallback_scale_uses_only_the_k_nearest_anchors():
     ones = np.ones(n)
     dist = np.arange(1.0, n + 1.0)
     got = patterns._fallback_scale(values, ones, ones, dist, [str(i) for i in range(n)])
-    assert np.isclose(got, 1.0)
+    assert np.allclose(got, (1.0, 1.0))
     # the same anchors in reverse request order give the same answer
     rev = patterns._fallback_scale(values[::-1], ones, ones, dist[::-1], [str(i) for i in range(n)])
-    assert np.isclose(rev, 1.0)
+    assert np.allclose(rev, (1.0, 1.0))
 
 
 def test_fallback_scale_breaks_exact_distance_ties_by_label_not_request_order():
@@ -504,22 +529,123 @@ def test_fallback_scale_breaks_exact_distance_ties_by_label_not_request_order():
     values[0] = 5.0
     labels = [f"c{i}" for i in range(n)]
     labels[0] = "zz"  # sorts last, so it is the one left out
-    assert np.isclose(patterns._fallback_scale(values, ones, ones, dist, labels), 1.0)
+    assert np.isclose(patterns._fallback_scale(values, ones, ones, dist, labels)[0], 1.0)
     order = np.arange(n)[::-1]
     got = patterns._fallback_scale(
         values[order], ones, ones, dist[order], [labels[i] for i in order]
     )
-    assert np.isclose(got, 1.0)
+    assert np.isclose(got[0], 1.0)
 
 
-def test_fallback_scale_floor_keeps_a_near_null_anchor_from_blowing_up():
-    """An anchor whose direction cosine is near zero (at the model's null) is floored at 0.05, so
-    alone it gives 0.1 / 0.05 = 2.0 rather than 0.1 / 1e-6 = 100000."""
-    got = patterns._fallback_scale(
-        np.array([0.1]), np.array([1.0]), np.array([1e-6]), np.array([0.01]), ["a"]
-    )
-    assert np.isclose(got, 2.0)
-    neg = patterns._fallback_scale(
-        np.array([-0.1]), np.array([1.0]), np.array([-1e-6]), np.array([0.01]), ["a"]
-    )
-    assert np.isclose(neg, 2.0)
+def test_fallback_reliability_rises_smoothly_from_the_floor_to_three_times_the_floor():
+    """r(|cos|) is 0 up to the floor (0.05), 1 from 3x the floor (the ruling said 2x; 3x is
+    what the real-montage sweeps support, see `_FALLBACK_FULL`), a smoothstep between, and the
+    same for either sign; no step on a fine grid is large (a hard cutoff would jump 0 -> 1)."""
+    f = patterns._FALLBACK_FLOOR
+    assert f == 0.05
+    c = np.array([0.0, 0.5 * f, f, 1.5 * f, 2.0 * f, 2.5 * f, 3.0 * f, 0.5, 1.0])
+    r = patterns._reliability(c)
+    assert np.array_equal(r[:3], [0.0, 0.0, 0.0])
+    assert r[3] == pytest.approx(0.25**2 * (3.0 - 2.0 * 0.25))  # smoothstep(0.25) = 0.15625
+    assert r[4] == pytest.approx(0.5)
+    assert r[5] == pytest.approx(0.75**2 * (3.0 - 2.0 * 0.75))  # smoothstep(0.75) = 0.84375
+    assert np.array_equal(r[6:], [1.0, 1.0, 1.0])
+    assert np.array_equal(patterns._reliability(-c), r)
+    grid = patterns._reliability(np.linspace(0.0, 4.0 * f, 4001))
+    assert np.all(np.diff(grid) >= 0.0) and np.diff(grid).max() < 0.002
+
+
+def test_fallback_scale_weights_by_reliability_and_fits_the_true_cosine():
+    """w = r(|cos|) / d^2, and the fit uses cos as it is (no floor): an anchor at 2x the floor
+    (r = 0.5) with cos -0.1 enters with half its distance weight. The trust returned is the
+    largest r in the fit; a lone anchor inside the ramp returns its own r."""
+    f = patterns._FALLBACK_FLOOR
+    values = np.array([0.3, 0.2])
+    envelope = np.array([1.0, 2.0])
+    cosine = np.array([0.5, -2.0 * f])
+    dist = np.array([2.0, 1.0])
+    w = np.array([1.0 / 4.0, 0.5 / 1.0])
+    y = values / envelope
+    want = (w * cosine * y).sum() / (w * cosine**2).sum()
+    got, trust = patterns._fallback_scale(values, envelope, cosine, dist, ["a", "b"])
+    assert np.isclose(got, want) and trust == 1.0
+    unweighted = (cosine * y / dist**2).sum() / (cosine**2 / dist**2).sum()
+    assert not np.isclose(got, unweighted)
+    lone = patterns._fallback_scale(values[1:], envelope[1:], cosine[1:], dist[1:], ["b"])
+    assert np.isclose(lone[0], y[1] / cosine[1]) and lone[1] == pytest.approx(0.5)
+
+
+def test_fallback_scale_skips_near_null_anchors_entirely():
+    """An anchor at or below the floor has no weight and takes none of the k nearest slots; with
+    no other anchor there is no fit (None), and `empirical` takes the analytic dipole."""
+    f = patterns._FALLBACK_FLOOR
+    for c in (f, 1e-6, -0.5 * f, 0.0):
+        assert (
+            patterns._fallback_scale(
+                np.array([0.1]), np.array([1.0]), np.array([c]), np.array([0.01]), ["a"]
+            )
+            is None
+        )
+    k = patterns._FALLBACK_K
+    # nearest: a near-null anchor with a wild value; then k usable anchors (the k-th differs);
+    # then a (k+1)-th usable one, wild again, that must stay out of the fit
+    n = k + 2
+    dist = np.arange(1.0, n + 1.0)
+    values = np.ones(n)
+    values[0], values[k], values[k + 1] = 1000.0, 3.0, 1000.0
+    cosine = np.ones(n)
+    cosine[0] = 0.5 * f
+    ones = np.ones(n)
+    labels = [f"c{i}" for i in range(n)]
+    w = 1.0 / dist[1 : k + 1] ** 2
+    want = (w * values[1 : k + 1]).sum() / w.sum()
+    assert np.allclose(patterns._fallback_scale(values, ones, cosine, dist, labels), (want, 1.0))
+
+
+# MNE's easycap-M1 F7/F8, mapped into the head frame as for `_EXTRA_POS` (computed offline).
+# There the blink dipole's null runs just inside them: cos +0.056 (F7, which now agrees in sign
+# with the map) and +0.064 (F8), both inside the reliability ramp.
+_EASYCAP_F7_F8 = np.array([[-0.076915, 0.035511, 0.000287], [0.077822, 0.035728, 0.001051]])
+
+
+def test_empirical_fallback_fades_near_null_anchors_on_a_real_montage(real_eog):
+    """With easycap-M1 F7/F8 as the only anchors, the reliability weights alone cannot fade them
+    (their ratio fixes the fit): A1 would read -1.473 (clipped to -1), 14x its value on the
+    mirror-test montage (-0.107). Blended by the best anchor's reliability (0.050), A1 reads
+    -0.160 and F9 -0.357 (montage -0.239)."""
+    centre, moment = patterns._FALLBACK["blink"]
+    _, cosine = patterns._dipole_terms(centre, moment, _EASYCAP_F7_F8)
+    assert np.allclose(cosine, [0.0556, 0.0636], atol=0.0001)
+    extra = dict(zip(_EXTRA_CHANNELS, _EXTRA_POS, strict=True))
+    for chs, want in ((("A1", "A2"), (-0.1603, -0.1516)), (("F9", "F10"), (-0.3567, -0.3056))):
+        pos = np.vstack([_EASYCAP_F7_F8, [extra[c] for c in chs]])
+        v = patterns.empirical("blink", ["F7", "F8", *chs], electrode_pos=pos, z=0.0)
+        assert np.allclose(v[2:], want, atol=0.0005), (chs, v)
+        dipole = patterns.analytic_dipole(centre, moment, pos[2:])
+        assert np.all(np.abs(v[2:]) > np.abs(dipole)) and np.all(np.abs(v[2:]) < 2 * np.abs(dipole))
+
+
+def test_empirical_fallback_is_continuous_as_a_lone_anchor_crosses_the_floor(real_eog):
+    """F8 as the only anchor for F10, moved forward from 5 mm behind the template position to
+    10 mm ahead (its cos goes 0.024 -> 0.077 and crosses the floor at +2.65 mm). Below the floor
+    F10 is exactly the dipole (-0.1813); above it F10 grows smoothly (-0.2274 at +5 mm, -0.4670
+    at +10 mm). Without the blend it jumped straight to the clip, -1, at the crossing."""
+    head = load_head_model()
+    f8 = head.electrode_pos[CHANNELS_19.index("F8")]
+    f10 = _EXTRA_POS[_EXTRA_CHANNELS.index("F10")]
+    centre, moment = patterns._FALLBACK["blink"]
+    dipole = patterns.analytic_dipole(centre, moment, f10[None])[0]
+    steps = np.arange(-5.0, 10.0001, 0.05) / 1000.0
+    vals, cos = [], []
+    for s in steps:
+        pos = np.array([f8 + [0.0, s, 0.0], f10])
+        vals.append(patterns.empirical("blink", ["F8", "F10"], electrode_pos=pos, z=0.0)[1])
+        cos.append(patterns._dipole_terms(centre, moment, pos[:1])[1][0])
+    vals, cos = np.array(vals), np.array(cos)
+    below = cos <= patterns._FALLBACK_FLOOR
+    assert below[:150].all() and not below[160:].any()
+    assert np.all(vals[below] == dipole)
+    step = np.abs(np.diff(vals))
+    assert not ((step > 0.25 * np.abs(vals[:-1])) & (step > 0.02)).any(), step.max()
+    assert vals[200] == pytest.approx(-0.2274, abs=0.0005)
+    assert vals[-1] == pytest.approx(-0.4670, abs=0.0005)
