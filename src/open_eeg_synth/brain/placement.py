@@ -23,8 +23,11 @@ def placed_centres(
             continue
         cand = head.sources_under(ch, n_near)
         if ch in MIDLINE or ch not in MIRROR:
-            cand = cand[np.argsort(np.abs(head.source_pos[cand, 0]))[:5]]
-        c = int(rng.choice(cand))
+            # DESIGN §4.3: the midline takes the single source nearest the midline,
+            # not a random pick among the candidates under the electrode.
+            c = int(cand[np.argsort(np.abs(head.source_pos[cand, 0]))[0]])
+        else:
+            c = int(rng.choice(cand))
         centres[ch] = c
         partner = MIRROR.get(ch)
         if partner is not None and partner in names:

@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from open_eeg_synth.brain.state import StateTimeline
+from open_eeg_synth.channels import MIRROR
 from open_eeg_synth.dsp import OU
 from open_eeg_synth.headmodel import HeadModel
 
@@ -41,6 +42,15 @@ class RhythmSpec:
     state_f0_shift_hz: dict[str, float] = field(default_factory=dict)
     hemisphere_gain: dict[str, float] = field(default_factory=dict)
     burst: BurstGate | None = None
+
+    def __post_init__(self) -> None:
+        if bool(self.sites) == bool(self.region):
+            raise ValueError(
+                f"RhythmSpec {self.name!r} needs exactly one of sites or region; got "
+                f"sites={self.sites!r} region={self.region!r}"
+            )
+        if self.region is not None and self.n_patches % 2 != 0:
+            raise ValueError(f"region placement needs an even n_patches; got {self.n_patches}")
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -87,7 +97,7 @@ class _Oscillator:
 
 
 class _Gate:
-    """On/off gating with raised-cosine edges; transitions drawn in order (streaming-safe)."""
+    """On/off gating with linear-ramp edges; transitions drawn in order (streaming-safe)."""
 
     def __init__(self, burst: BurstGate, fs: float, rng: np.random.Generator) -> None:
         self.b, self.fs, self.rng = burst, fs, rng
@@ -126,6 +136,36 @@ class _Gate:
         return g
 
 
+def _orient_patches(
+    head: HeadModel, centres: list[int], raw: list[np.ndarray], ref: list[int]
+) -> list[np.ndarray]:
+    """Orient every patch positive at its own reference channel; a mirror patch then
+    takes its partner's polarity, not its own independent orientation: its sign is
+    chosen so its map value at the mirror of the partner's reference channel matches
+    the partner's (positive) value there. Independent per-patch orientation flips
+    mirror pairs inconsistently when their local geometry differs (DESIGN §4.3)."""
+    oriented = [m if m[ref[i]] >= 0 else -m for i, m in enumerate(raw)]
+    paired: set[int] = set()
+    for i, c in enumerate(centres):
+        if i in paired:
+            continue
+        mirror_c = head.mirror_source(c)
+        if mirror_c == c:
+            continue  # on the midline: no partner to make consistent with
+        j = next(
+            (k for k, c2 in enumerate(centres) if k != i and k not in paired and c2 == mirror_c),
+            None,
+        )
+        if j is None:
+            continue
+        paired.add(i)
+        paired.add(j)
+        mirror_ch = head.index(MIRROR.get(head.channels[ref[i]], head.channels[ref[i]]))
+        if oriented[j][mirror_ch] < 0:
+            oriented[j] = -oriented[j]
+    return oriented
+
+
 class Rhythm:
     def __init__(
         self,
@@ -139,26 +179,43 @@ class Rhythm:
     ) -> None:
         self.spec, self.fs, self.timeline = spec, float(fs), timeline
         self.name = f"brain.rhythm:{spec.name}"
-        children = seq.spawn(len(centres) + 2)
+        children = seq.spawn(len(centres) + 2)  # consumes seq: it cannot be spawned again
         rngs = [np.random.Generator(np.random.PCG64(c)) for c in children]
         misc = rngs[-1]
         targets = [head.index(s) for s in spec.sites] if spec.sites else None
-        maps = []
-        for c in centres:
-            m = head.patch_map(c, spec.width_mm)
-            if targets is not None and sum(m[i] for i in targets) < 0:
-                m = -m
-            x = head.source_pos[c, 0]
-            side = "left" if x < -0.005 else ("right" if x > 0.005 else "midline")
-            maps.append(m * spec.hemisphere_gain.get(side, 1.0))
-        self.maps = np.array(maps)  # (P, n_ch)
-        if targets is None:
-            summed = np.abs(self.maps.sum(axis=0))
-            targets = [int(np.argmax(summed))]
-            for i, m in enumerate(self.maps):  # orient every patch positive at that channel
-                if m[targets[0]] < 0:
-                    self.maps[i] = -m
+        raw = [head.patch_map(c, spec.width_mm) for c in centres]
+
+        # Orientation reference channel per patch: its own site for site placement, its
+        # own strongest channel for region placement (patches in one region can peak at
+        # very different channels, so a single shared channel is a poor reference for
+        # some of them). The amplitude target stays the channel with the largest summed
+        # response, shared by every patch, as DESIGN §4.3 defines it.
+        if targets is not None:
+            ref = list(targets)
+        else:
+            t = int(np.argmax(np.abs(np.sum(raw, axis=0))))
+            targets = [t]
+            ref = [int(np.argmax(np.abs(m))) for m in raw]
+
+        oriented = _orient_patches(head, centres, raw, ref)
+        self.maps = np.array(oriented)  # (P, n_ch), un-gained
         self.scale = spec.amp_uv / np.abs(self.maps.sum(axis=0))[targets].max()
+
+        # hemisphere_gain is applied only after the scale is fixed, so a plant that
+        # quiets one hemisphere doesn't have its own effect partly cancelled by scale.
+        sides = [
+            "left"
+            if head.source_pos[c, 0] < -0.005
+            else ("right" if head.source_pos[c, 0] > 0.005 else "midline")
+            for c in centres
+        ]
+        self.maps = np.array(
+            [
+                m * spec.hemisphere_gain.get(side, 1.0)
+                for m, side in zip(self.maps, sides, strict=True)
+            ]
+        )
+
         self.lags = [int(round(misc.uniform(0.0, spec.lag_ms) / 1000.0 * fs)) for _ in centres]
         self.maxlag = max(self.lags) if self.lags else 0
         self.driver = _Oscillator(fs, f0_hz, spec, rngs[0])
