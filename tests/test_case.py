@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import dataclasses
+import json
+import math
+
 import numpy as np
 import pytest
 
 from open_eeg_synth.artifacts import Event, EventArtifact, Remedy, TransformArtifact, TruthRecord
 from open_eeg_synth.artifacts.registry import ARTIFACTS, register
-from open_eeg_synth.case import ArtifactSpec, CaseSpec, make_case, make_subject
+from open_eeg_synth.brain.state import StateTimeline
+from open_eeg_synth.case import (
+    ArtifactSpec,
+    CaseSpec,
+    ConditionSpec,
+    SensorSpec,
+    case_id_for,
+    make_case,
+    make_subject,
+)
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.headmodel import HeadModel
 from open_eeg_synth.recipes import resting_case
@@ -148,3 +161,65 @@ def test_drowsy_segment_is_inserted_into_eyes_closed_only():
     ]
     assert [s.state for s in eo.timeline.segments] == ["eyes_open"]
     assert CaseSpec.from_dict(spec.to_dict()) == spec
+
+
+def _json_round_trip(spec: CaseSpec) -> CaseSpec:
+    return CaseSpec.from_dict(json.loads(json.dumps(spec.to_dict(), allow_nan=False)))
+
+
+def test_identity_is_stable_across_numeric_types_and_json():
+    """Equal specs serialise identically: ints and numpy scalars are normalised on construction,
+    so digest and case_id agree before and after a strict-JSON round trip (DESIGN §7.2)."""
+    base = resting_case(1, duration_s=8.0, artifacts=())
+    bg = dataclasses.replace(base.brain.background, rms_uv=int(base.brain.background.rms_uv))
+    variants = [
+        resting_case(1, duration_s=8, artifacts=()),
+        resting_case(np.int64(1), duration_s=np.float32(8.0), fs=256, artifacts=()),
+        dataclasses.replace(
+            base, seed=np.int64(1), fs=np.int64(256), sensor=SensorSpec(white_uv=np.float32(1.5))
+        ),
+        dataclasses.replace(base, brain=dataclasses.replace(base.brain, background=bg)),
+    ]
+    for v in variants:
+        assert v == base
+        assert v.digest() == base.digest() and case_id_for(v) == case_id_for(base)
+        back = _json_round_trip(v)
+        assert back == base and back.digest() == base.digest()
+        assert type(back.seed) is int and type(back.fs) is float
+    assert CaseSpec(seed=np.int64(3)).digest() == CaseSpec(seed=3).digest()
+    with_params = dataclasses.replace(
+        base, artifacts=(ArtifactSpec("x", {"amp": np.float32(2.5), "sides": ("l", "r")}),)
+    )
+    back = _json_round_trip(with_params)
+    assert back == with_params and back.digest() == with_params.digest()
+
+
+def test_artifact_streams_are_indexed_within_their_kind(_test_kinds):
+    """<condition>:artifact:<kind>:<i> counts instances of the same kind only (DESIGN §8.1), so
+    putting an artifact of another kind first leaves the existing layers' draws unchanged."""
+    ticks = (ArtifactSpec("test_case_tick"), ArtifactSpec("test_case_tick", {"amp_uv": 5.0}))
+    a = make_case(resting_case(9, duration_s=8.0, artifacts=ticks))
+    b = make_case(
+        resting_case(9, duration_s=8.0, artifacts=(ArtifactSpec("test_case_flat"), *ticks))
+    )
+    for cond in ("eyes_closed", "eyes_open"):
+        for name in ("artifact:test_case_tick#1", "artifact:test_case_tick#2"):
+            la, lb = a.recordings[cond].layers[name], b.recordings[cond].layers[name]
+            assert np.abs(la).max() > 0 and np.array_equal(la, lb)
+
+
+def test_condition_names_must_be_unique():
+    tl = StateTimeline.constant("eyes_open", 1.0)
+    with pytest.raises(ValueError, match="duplicate condition"):
+        CaseSpec(seed=1, conditions=(ConditionSpec("a", 1.0, tl), ConditionSpec("a", 1.0, tl)))
+
+
+def test_infinite_durations_survive_strict_json():
+    spec = CaseSpec(
+        seed=1,
+        conditions=(ConditionSpec("stream", math.inf, StateTimeline.constant("eyes_open")),),
+    )
+    back = _json_round_trip(spec)
+    assert back == spec and back.digest() == spec.digest()
+    assert back.conditions[0].duration_s == math.inf
+    assert back.conditions[0].timeline.segments[0].t1_s == math.inf

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 import open_eeg_synth.artifacts  # noqa: F401  (registers the built-in artifact kinds on import)
+from open_eeg_synth._canon import canonical_fields, inf_from_json, inf_to_json, json_plain
 from open_eeg_synth.brain.layer import BrainLayer, BrainSpec
 from open_eeg_synth.brain.network import NetworkWiring, wire_network
 from open_eeg_synth.brain.placement import placed_centres, region_centres
@@ -26,11 +27,19 @@ from open_eeg_synth.sensor import SensorNoise
 class SensorSpec:
     white_uv: float = 1.5
 
+    def __post_init__(self) -> None:
+        canonical_fields(self)
+
 
 @dataclass(frozen=True)
 class ArtifactSpec:
     kind: str
     params: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
+        # params are the plug-in's constructor arguments, kept exactly as JSON reads them back
+        object.__setattr__(self, "params", json_plain(dict(self.params)))
 
 
 @dataclass(frozen=True)
@@ -39,16 +48,21 @@ class ConditionSpec:
     duration_s: float
     timeline: StateTimeline
 
+    def __post_init__(self) -> None:
+        canonical_fields(self)
+
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-            "duration_s": self.duration_s,
+            "duration_s": inf_to_json(self.duration_s),  # a stream's condition is unbounded
             "timeline": self.timeline.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> ConditionSpec:
-        return cls(d["name"], float(d["duration_s"]), StateTimeline.from_dict(d["timeline"]))
+        return cls(
+            d["name"], inf_from_json(d["duration_s"]), StateTimeline.from_dict(d["timeline"])
+        )
 
 
 def _default_brain() -> BrainSpec:
@@ -70,6 +84,16 @@ class CaseSpec:
     sensor: SensorSpec = SensorSpec()
     conditions: tuple[ConditionSpec, ...] = ()
     label: str = "synthetic"
+
+    def __post_init__(self) -> None:
+        # Equal specs must serialise identically (digest, case_id): plain Python types only.
+        canonical_fields(self)
+        object.__setattr__(self, "plants", tuple(self.plants))
+        object.__setattr__(self, "artifacts", tuple(self.artifacts))
+        object.__setattr__(self, "conditions", tuple(self.conditions))
+        names = [c.name for c in self.conditions]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate condition names: {names}")
 
     def to_dict(self) -> dict:
         from open_eeg_synth.brain.plants import plant_to_dict
@@ -109,7 +133,9 @@ class CaseSpec:
         )
 
     def digest(self) -> str:
-        blob = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+        blob = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
         return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
@@ -203,8 +229,10 @@ def make_engine(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> E
     counts = Counter(a.kind for a in spec.artifacts)
     seen: Counter = Counter()
     occupancy = Occupancy()
-    for i, a in enumerate(spec.artifacts):
+    for a in spec.artifacts:
         art = make_artifact(a.kind, **a.params)
+        # i counts instances of this kind only, so adding another kind never moves these draws
+        i = seen[a.kind]
         seen[a.kind] += 1
         suffix = f"#{seen[a.kind]}" if counts[a.kind] > 1 else ""
         prefix = "transform" if art.mode == "transform" else "artifact"

@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from open_eeg_synth._canon import canonical_fields
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import MIRROR
 from open_eeg_synth.dsp import OU
@@ -18,6 +19,9 @@ class BurstGate:
     on_s: tuple[float, float] = (1.0, 3.0)
     off_s: tuple[float, float] = (8.0, 25.0)
     ramp_s: float = 0.3
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,7 @@ class RhythmSpec:
     burst: BurstGate | None = None
 
     def __post_init__(self) -> None:
+        canonical_fields(self)
         if bool(self.sites) == bool(self.region):
             raise ValueError(
                 f"RhythmSpec {self.name!r} needs exactly one of sites or region; got "

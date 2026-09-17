@@ -7,12 +7,17 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from open_eeg_synth._canon import canonical_fields, inf_from_json, inf_to_json
+
 
 @dataclass(frozen=True)
 class StateSegment:
     t0_s: float
     t1_s: float
     state: str
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
 
 
 @dataclass(frozen=True)
@@ -77,12 +82,15 @@ class StateTimeline:
     def to_dict(self) -> dict:
         return {
             "ramp_s": self.ramp_s,
-            "segments": [{"t0_s": s.t0_s, "t1_s": s.t1_s, "state": s.state} for s in self.segments],
+            "segments": [
+                {"t0_s": s.t0_s, "t1_s": inf_to_json(s.t1_s), "state": s.state}
+                for s in self.segments
+            ],
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> StateTimeline:
         return cls(
-            [StateSegment(s["t0_s"], s["t1_s"], s["state"]) for s in d["segments"]],
+            [StateSegment(s["t0_s"], inf_from_json(s["t1_s"]), s["state"]) for s in d["segments"]],
             ramp_s=d.get("ramp_s", 2.0),
         )

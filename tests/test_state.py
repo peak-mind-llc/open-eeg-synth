@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import math
+
 import numpy as np
 import pytest
 
@@ -38,3 +41,17 @@ def test_constant_and_validation():
         StateTimeline([StateSegment(1, 2, "a")])
     with pytest.raises(ValueError):
         StateTimeline([StateSegment(0, 2, "a"), StateSegment(3, 4, "b")])
+
+
+def test_infinite_segment_is_strict_json_null():
+    tl = StateTimeline([StateSegment(0, 5, "eyes_closed"), StateSegment(5, math.inf, "drowsy")])
+    text = json.dumps(tl.to_dict(), allow_nan=False)
+    assert json.loads(text)["segments"][1]["t1_s"] is None
+    back = StateTimeline.from_dict(json.loads(text))
+    assert back == tl and back.segments[1].t1_s == math.inf
+
+
+def test_segment_times_are_plain_floats():
+    seg = StateSegment(np.int64(0), 5, "a")
+    assert type(seg.t0_s) is float and type(seg.t1_s) is float
+    assert seg == StateSegment(0.0, 5.0, "a")
