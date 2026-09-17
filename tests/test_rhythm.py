@@ -36,6 +36,17 @@ def test_region_centres_posterior_mirrored():
     assert all(head.source_pos[i, 1] < -0.04 for i in c)
 
 
+def test_region_centres_mirror_images_never_collide():
+    """Two left draws must not share a mirror source: that would stack two patches on one
+    right-hemisphere source and double its weight (DESIGN §4.3)."""
+    head = load_head_model()
+    for seed in range(200):
+        c = region_centres(head, "posterior", 10, stream_rng(seed, "subject:rhythm:alpha"))
+        assert len(set(c)) == 10, seed
+        assert c[5:] == [head.mirror_source(x) for x in c[:5]], seed
+        assert all(head.source_pos[x, 0] < -0.01 for x in c[:5]), seed
+
+
 def test_supplied_offsets_and_lags_are_used_and_fallback_draws_from_seed():
     head = load_head_model()
     tl = StateTimeline.constant("eyes_closed")

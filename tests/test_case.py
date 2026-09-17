@@ -253,3 +253,32 @@ def test_patch_offsets_and_lags_are_subject_properties():
     assert d["patch_f0_offsets_hz"] == subj.patch_f0_offsets_hz
     assert d["patch_lags_ms"] == subj.patch_lags_ms
     json.dumps(d, allow_nan=False)
+
+
+def test_whole_case_is_chunk_invariant(_test_kinds):
+    """Every layer of a two-condition case with artifacts and a drowsy segment renders the same
+    for random block partitions as in one pass (DESIGN §8.2)."""
+    arts = (
+        ArtifactSpec("test_case_tick"),
+        ArtifactSpec("test_case_flat"),
+        ArtifactSpec("test_case_tick", {"amp_uv": 5.0}),
+    )
+    spec = resting_case(21, duration_s=20.0, artifacts=arts, drowsy_from_s=10.0)
+    case = make_case(spec)
+    rng = np.random.default_rng(0)
+    for cond in spec.conditions:
+        whole = case.recordings[cond.name]
+        n_total = whole.n_samples
+        for _ in range(2):
+            eng = make_engine(spec, case.subject, cond)
+            parts: dict[str, list[np.ndarray]] = {}
+            t0 = 0
+            while t0 < n_total:
+                n = int(min(n_total - t0, rng.integers(1, 700)))
+                for k, v in eng.render(t0, n).layers.items():
+                    parts.setdefault(k, []).append(v)
+                t0 += n
+            assert list(parts) == list(whole.layers)
+            for k, blocks in parts.items():
+                assert np.allclose(np.concatenate(blocks, axis=1), whole.layers[k], atol=1e-4)
+            assert eng.truth() == whole.truth

@@ -76,15 +76,21 @@ def test_brain_layer_chunk_invariance_and_eyes_closed_alpha():
 
 # Calibrated medians of this test's own measurement (brain layer only, nominal head, eyes closed,
 # average reference, 60 s, the 9 seeds below) for the recipe calibrated in Task 12
-# (recipes.py): O1 alpha share 0.567 (range 0.20-0.76), Cz 1-45 Hz RMS 11.7 uV (11.1-14.0).
+# (recipes.py): O1 alpha share 0.567 (range 0.22-0.76), Cz 1-45 Hz RMS 11.9 uV (11.1-13.9).
+#
+# These pins belong to this fixed seed set, which reads low: the population medians of the same
+# measurement over 270 seeds (0-269) are O1 share 0.63 and Cz 12.8 uV. Four of the nine subjects
+# (seeds 2, 3, 100, 101: shares 0.22-0.43) drew alpha patches that project weakly onto O1, which
+# is where the population's lower tail comes from. Thirty disjoint 9-seed sets from those 270
+# have medians from 0.46 to 0.83, so a different seed set needs its own pinned value.
 CAL_O1_ALPHA_SHARE = 0.567
-CAL_CZ_RMS_1_45_UV = 11.7
+CAL_CZ_RMS_1_45_UV = 11.9
 
 
 def test_calibrated_amplitudes_median_across_seeds():
     """The resting recipe's calibrated amplitudes, judged as medians over subjects.
 
-    One seed is not representative (O1 alpha share spans 0.20-0.76 over these nine), so both
+    One seed is not representative (O1 alpha share spans 0.22-0.76 over these nine), so both
     numbers are medians. Alpha share = 8-13 / 1-40 Hz power at O1, pinned to at least 0.45 (the
     realism target is ~0.6, DESIGN §9.1). Cz RMS is read over 1-45 Hz, as §9.1 measures it (the
     unfiltered value is dominated by sub-1 Hz background), within +/-30 % of the calibrated median.

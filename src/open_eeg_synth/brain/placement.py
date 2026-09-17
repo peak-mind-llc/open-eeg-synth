@@ -38,7 +38,12 @@ def placed_centres(
 def region_centres(
     head: HeadModel, region: str, n_patches: int, rng: np.random.Generator
 ) -> list[int]:
-    """n_patches/2 sources in the left half of a named region, plus their mirror images."""
+    """n_patches/2 sources in the left half of a named region, plus their mirror images.
+
+    Mirror images are nearest-source matches, so two left sources can share one; a left draw
+    whose mirror image is already taken is redrawn from the left candidates whose images are
+    still free, so no source carries two patches. Draws without a collision are unchanged.
+    """
     if region not in REGIONS:
         raise ValueError(f"unknown region {region!r}; known: {sorted(REGIONS)}")
     r = REGIONS[region]
@@ -49,4 +54,18 @@ def region_centres(
     )[0]
     left = cand[rr[cand, 0] < -0.01]
     half = [int(c) for c in rng.choice(left, max(1, n_patches // 2), replace=False)]
-    return half + [head.mirror_source(c) for c in half]
+    mirrors = [head.mirror_source(c) for c in half]
+    taken: set[int] = set()
+    for i in range(len(half)):
+        if mirrors[i] in taken:
+            free = [
+                int(c)
+                for c in left
+                if int(c) not in half and head.mirror_source(int(c)) not in taken
+            ]
+            if not free:
+                raise ValueError(f"region {region!r} cannot hold {n_patches} distinct patches")
+            half[i] = int(rng.choice(free))
+            mirrors[i] = head.mirror_source(half[i])
+        taken.add(mirrors[i])
+    return half + mirrors
