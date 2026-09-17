@@ -4,9 +4,7 @@ import numpy as np
 
 from open_eeg_synth.artifacts.patterns import load_eog_patterns
 
-HEOG_SD_MAX = (
-    0.45  # measured 0.42 over 30 subjects (0.40 over 17): the heog map varies more than blink
-)
+HEOG_SD_MAX = 0.45  # measured 0.42 over 24 of 30 subjects: the heog map varies more than blink
 
 
 def _idx(names, label):
