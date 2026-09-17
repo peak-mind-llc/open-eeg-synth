@@ -577,11 +577,40 @@ def test_make_event_must_return_an_event_at_the_given_onset():
     tl = StateTimeline.constant("eyes_open")
     art = PreRoll(rate_by_state={"eyes_open": 1.0}, exclusive=True)
     occ = Occupancy()
-    occ.add(100, 200)  # forces a push, so the rebuild path is exercised too
+    # The busy span is where the old loop spun; the check now fires on the FIRST build (sample
+    # 150), before any push, so this test never reaches the rebuild path. The push path has its
+    # own test below.
+    occ.add(100, 200)
     art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:test_preroll"))
     art._next = (1.5, True)  # candidate at sample 150, inside the busy span
-    with pytest.raises(ValueError, match="test_preroll"):
+    with pytest.raises(ValueError, match=r"test_preroll.*onset=150.*at 145"):
         art._consume_next()
+
+
+def test_onset_check_also_fires_on_a_rebuild_after_a_push():
+    """A plug-in whose first build is correct but whose rebuild at a pushed onset returns a
+    shifted Event must raise on that rebuild (the push path), naming the pushed onset."""
+
+    class ShiftOnRebuild(EventArtifact):
+        kind = "test_shift_on_rebuild"
+
+        def make_event(self, onset):
+            start = onset if onset < 200 else onset + 3  # wrong only where the push lands
+            truth = TruthRecord(
+                "shift", None, None, ("A",), start / self.fs, None, 1.0, (Remedy.LEAVE,), "x", {}
+            )
+            return Event.from_pattern(start, np.array([1.0]), np.ones(10), truth)
+
+    tl = StateTimeline.constant("eyes_open")
+    art = ShiftOnRebuild(rate_by_state={"eyes_open": 1.0}, exclusive=True)
+    occ = Occupancy()
+    occ.add(100, 200)
+    art.bind(_ctx(tl, seed=1, occupancy=occ, name="artifact:test_shift_on_rebuild"))
+    assert art.make_event(150).onset == 150  # the first build alone is fine
+    art._next = (1.5, True)  # candidate at sample 150, pushed to 200 by the busy span
+    with pytest.raises(ValueError, match=r"test_shift_on_rebuild.*onset=200.*at 203"):
+        art._consume_next()
+    assert art._truth == [] and occ.spans == [(100, 200)]  # nothing was committed
 
 
 def test_rebind_to_the_same_occupancy_matches_a_fresh_bind():
@@ -705,3 +734,4 @@ def _unregister_test_plugins():
     ARTIFACTS.pop("test_bare", None)
     ARTIFACTS.pop("test_preroll", None)
     ARTIFACTS.pop("test_grow", None)
+    ARTIFACTS.pop("test_shift_on_rebuild", None)
