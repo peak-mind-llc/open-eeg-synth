@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -83,6 +85,25 @@ def test_truth_is_listed_only_once_rendering_reaches_the_onset():
 )
 def test_rejects_a_negative_or_empty_span(onset_s, offset_s):
     with pytest.raises(ValueError):
+        make_artifact("dead_channel", channel="Fp1", onset_s=onset_s, offset_s=offset_s)
+
+
+@pytest.mark.parametrize(
+    ("onset_s", "offset_s"),
+    [
+        (0.0, math.inf),
+        (1.0, math.inf),
+        (0.0, math.nan),
+        (math.inf, None),
+        (math.inf, math.inf),
+        (math.nan, 2.0),
+        (-math.inf, 2.0),
+    ],
+)
+def test_rejects_a_non_finite_span(onset_s, offset_s):
+    """Both ends must be finite; an infinite offset used to pass and then crash at bind with an
+    OverflowError (an open-ended span is offset_s=None)."""
+    with pytest.raises(ValueError, match="finite"):
         make_artifact("dead_channel", channel="Fp1", onset_s=onset_s, offset_s=offset_s)
 
 

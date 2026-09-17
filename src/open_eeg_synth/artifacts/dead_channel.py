@@ -23,11 +23,15 @@ class DeadChannel(TransformArtifact):
         offset_s: float | None = None,
         noise_uv: float = 0.3,
     ) -> None:
+        # both ends finite (an infinite offset would overflow at bind; open-ended is None)
         if not (math.isfinite(float(onset_s)) and float(onset_s) >= 0.0):
-            raise ValueError(f"dead_channel: onset_s must be >= 0, got {onset_s!r}")
-        if offset_s is not None and not float(offset_s) > float(onset_s):
+            raise ValueError(f"dead_channel: onset_s must be finite and >= 0, got {onset_s!r}")
+        if offset_s is not None and not (
+            math.isfinite(float(offset_s)) and float(offset_s) > float(onset_s)
+        ):
             raise ValueError(
-                f"dead_channel: offset_s must be later than onset_s ({onset_s!r}), got {offset_s!r}"
+                f"dead_channel: offset_s must be finite and later than onset_s ({onset_s!r}), "
+                f"got {offset_s!r}"
             )
         self.channel, self.onset_s = channel, float(onset_s)
         self.offset_s, self.noise_uv = offset_s, float(noise_uv)
