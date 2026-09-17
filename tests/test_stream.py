@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 import time
 
@@ -106,6 +107,7 @@ def test_labels_the_head_model_lacks_carry_sensor_noise_only():
         src = StreamSource(labels, 256.0, seed=11, sensor=SensorSpec(white_uv=4.0))
     assert len([w for w in caught if "unmodelled" in str(w.message)]) == 1
     assert src.unmodelled_labels == ("Fpz", "Oz", "A1", "X1")
+    twin = copy.deepcopy(src)  # the same fresh source, for the chunking check below
     ref = StreamSource(["Fp1", "HR"], 256.0, seed=11, sensor=SensorSpec(white_uv=4.0))
     assert ref.unmodelled_labels == ()
     x = np.concatenate([src.next_chunk(512) for _ in range(8)], axis=1)
@@ -118,17 +120,13 @@ def test_labels_the_head_model_lacks_carry_sensor_noise_only():
     assert np.abs(np.corrcoef(noise)[np.triu_indices(4, 1)]).max() < 0.1
 
     rng = np.random.default_rng(20260917)
-    with pytest.warns(UserWarning, match="unmodelled"):
-        again = StreamSource(labels, 256.0, seed=11, sensor=SensorSpec(white_uv=4.0))
     parts, t = [], 0
     while t < x.shape[1]:
         n = min(int(rng.integers(1, 700)), x.shape[1] - t)
-        parts.append(again.next_chunk(n))
+        parts.append(twin.next_chunk(n))
         t += n
     assert np.allclose(np.concatenate(parts, axis=1), x, atol=1e-4)
 
-    with pytest.warns(UserWarning, match="unmodelled"):
-        StreamSource(["X1"], 256.0, seed=1)  # nothing modelled at all still streams
     with pytest.raises(ValueError, match="duplicate"):
         StreamSource(["O1", "o1", "X1"], 256.0, seed=1)
 

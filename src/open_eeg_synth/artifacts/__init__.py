@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# built-in kinds (each module registers itself on import) — extended in Tasks 16-19
+# the built-in kinds; each module registers itself on import
 from open_eeg_synth.artifacts import (
     blink,  # noqa: F401
     dead_channel,  # noqa: F401

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import mne
 import numpy as np
 from mne_connectivity import spectral_connectivity_epochs
@@ -84,14 +86,23 @@ def measure(raw: mne.io.Raw, remove_blinks: bool = False) -> dict:
     for ref, mraw in (("average", avg), ("bipolar", bipolar(avg)), ("laplacian", laplacian(avg))):
         ep = _epochs(mraw)[keep]
         names = ep.ch_names
-        con = spectral_connectivity_epochs(
-            ep,
-            method=["wpli2_debiased", "coh"],
-            fmin=fmin,
-            fmax=fmax,
-            faverage=True,
-            verbose=False,
-        )
+        with warnings.catch_warnings():
+            # 1 Hz in a 4 s epoch is 4 cycles, under mne-connectivity's 5-cycle advice, so it warns
+            # on every call. The committed reference was measured with the same epochs and fmin,
+            # so real and synthetic data stay comparable; only that warning is silenced.
+            warnings.filterwarnings(
+                "ignore",
+                message=r"fmin=1\.000 Hz corresponds to 4\.000 < 5 cycles",
+                category=RuntimeWarning,
+            )
+            con = spectral_connectivity_epochs(
+                ep,
+                method=["wpli2_debiased", "coh"],
+                fmin=fmin,
+                fmax=fmax,
+                faverage=True,
+                verbose=False,
+            )
         dw = con[0].get_data(output="dense")  # (n, n, n_bands)
         coh = con[1].get_data(output="dense")
         pos = _pair_positions(names)

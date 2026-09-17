@@ -41,16 +41,37 @@ from open_eeg_synth.case import (
 )
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.headmodel import HeadModel
-from open_eeg_synth.recipes import resting_case
+from open_eeg_synth.recipes import ordinary_artifacts, resting_case
 from open_eeg_synth.seeds import stream_rng
 from tests.helpers import band_power
 
 
-def test_spec_roundtrip_digest_and_case_id():
-    spec = resting_case(123, duration_s=8.0, artifacts=())
-    assert CaseSpec.from_dict(spec.to_dict()) == spec
-    assert spec.digest() == CaseSpec.from_dict(spec.to_dict()).digest()
-    case = make_case(spec)
+def test_spec_round_trips_through_json_and_keeps_its_identity():
+    """Specs with and without plants, artifacts and a drowsy segment survive a strict-JSON round
+    trip with the same digest and case id, and a plain spec renders the documented case
+    (DESIGN §7.2)."""
+    full = resting_case(
+        99,
+        duration_s=30.0,
+        drowsy_from_s=15.0,
+        plants=(FocalSlow("F7"), RhythmicBursts(("Fz",), amp_uv=25.0)),
+        artifacts=(
+            ArtifactSpec("blink", {"median_uv": 90.0}),
+            ArtifactSpec("emg", {"side": "both"}),
+        ),
+    )
+    ordinary = resting_case(14, duration_s=1.0)
+    plain = resting_case(123, duration_s=8.0, artifacts=())
+    for spec in (full, ordinary, plain):
+        assert CaseSpec.from_dict(spec.to_dict()) == spec
+        back = _json_round_trip(spec)
+        assert back == spec and back.digest() == spec.digest()
+        assert case_id_for(back) == case_id_for(spec)
+    assert case_id_for(resting_case(100, duration_s=30.0)) != case_id_for(full)
+    assert full.to_dict()["conditions"][0]["timeline"]["segments"][1]["state"] == "drowsy"
+
+    case = make_case(plain)
+    assert case.case_id == case_id_for(plain)
     assert case.case_id.startswith("synth-") and len(case.case_id) == 14
     assert set(case.recordings) == {"eyes_closed", "eyes_open"}
     rec = case.recordings["eyes_closed"]
@@ -406,35 +427,6 @@ def test_patch_offsets_and_lags_are_subject_properties():
     json.dumps(d, allow_nan=False)
 
 
-def test_whole_case_is_chunk_invariant(_test_kinds):
-    """Every layer of a two-condition case with artifacts and a drowsy segment renders the same
-    for random block partitions as in one pass (DESIGN §8.2)."""
-    arts = (
-        ArtifactSpec("test_case_tick"),
-        ArtifactSpec("test_case_flat"),
-        ArtifactSpec("test_case_tick", {"amp_uv": 5.0}),
-    )
-    spec = resting_case(21, duration_s=20.0, artifacts=arts, drowsy_from_s=10.0)
-    case = make_case(spec)
-    rng = np.random.default_rng(0)
-    for cond in spec.conditions:
-        whole = case.recordings[cond.name]
-        n_total = whole.n_samples
-        for _ in range(2):
-            eng = make_engine(spec, case.subject, cond)
-            parts: dict[str, list[np.ndarray]] = {}
-            t0 = 0
-            while t0 < n_total:
-                n = int(min(n_total - t0, rng.integers(1, 700)))
-                for k, v in eng.render(t0, n).layers.items():
-                    parts.setdefault(k, []).append(v)
-                t0 += n
-            assert list(parts) == list(whole.layers)
-            for k, blocks in parts.items():
-                assert np.allclose(np.concatenate(blocks, axis=1), whole.layers[k], atol=1e-4)
-            assert eng.truth() == whole.truth
-
-
 def test_plant_rhythms_are_subject_properties_too():
     """A plant's own rhythm draws its per-patch offsets/lags once per subject too (DESIGN §8.1
     subject:rhythm:<name>), identical in every condition — and adding a plant must not disturb
@@ -563,9 +555,11 @@ def test_pattern_jitter_is_recorded_only_for_kinds_that_apply_it():
     assert np.array_equal(blink.pattern, expected)
 
 
-def test_case_with_plants_is_chunk_invariant():
-    """A case using all six planted-pattern primitives together, with a drowsy segment, renders
-    the same for random block partitions as in one pass (DESIGN §8.2)."""
+def test_whole_case_is_chunk_invariant(_test_kinds):
+    """Every layer of a two-condition case with the ordinary artifacts, test artifacts (two of
+    one kind and a transform), all six planted-pattern primitives and a drowsy segment renders the
+    same in one block and in random block partitions as the case did (DESIGN §8.2), and so do its
+    artifact truth and its plant records, burst times included (§4.4)."""
     plants = (
         FocalSlow("F7", state_gain={"eyes_open": 0.0}),
         RhythmicBursts(("Fz", "Cz"), burst_s=(1, 2), gap_s=(2, 4)),
@@ -574,21 +568,42 @@ def test_case_with_plants_is_chunk_invariant():
         PeakShift("alpha", -1.0),
         ReducedRhythm("smr", 0.3),
     )
-    spec = resting_case(11, duration_s=20.0, artifacts=(), plants=plants, drowsy_from_s=8.0)
+    arts = (
+        *ordinary_artifacts(),
+        ArtifactSpec("test_case_tick"),
+        ArtifactSpec("test_case_flat"),
+        ArtifactSpec("test_case_tick", {"amp_uv": 5.0}),
+    )
+    spec = resting_case(21, duration_s=20.0, artifacts=arts, plants=plants, drowsy_from_s=10.0)
     case = make_case(spec)
     rng = np.random.default_rng(0)
     for cond in spec.conditions:
         whole = case.recordings[cond.name]
         n_total = whole.n_samples
         eng = make_engine(spec, case.subject, cond)
-        parts, t0 = [], 0
-        while t0 < n_total:
-            n = int(min(n_total - t0, rng.integers(1, 700)))
-            parts.append(eng.render(t0, n).mixed)
-            t0 += n
-        assert np.allclose(np.concatenate(parts, axis=1), whole.mixed, atol=1e-4)
-        # the plant records, burst times included (DESIGN §4.4), do not depend on the chunking
-        assert plant_records(spec, eng, cond) == whole.plants
+        one_block = eng.render_all(n_total, block=n_total)
+        renders = [(one_block.layers, one_block.truth, plant_records(spec, eng, cond))]
+        for _ in range(2):
+            eng = make_engine(spec, case.subject, cond)
+            parts: dict[str, list[np.ndarray]] = {}
+            t0 = 0
+            while t0 < n_total:
+                n = int(min(n_total - t0, rng.integers(1, 700)))
+                for k, v in eng.render(t0, n).layers.items():
+                    parts.setdefault(k, []).append(v)
+                t0 += n
+            layers = {k: np.concatenate(v, axis=1) for k, v in parts.items()}
+            renders.append((layers, eng.truth(), plant_records(spec, eng, cond)))
+        for layers, truth, plant_recs in renders:
+            assert list(layers) == list(whole.layers)
+            for k, arr in layers.items():
+                assert np.allclose(arr, whole.layers[k], atol=1e-4)
+            assert np.allclose(sum(layers.values()), whole.mixed, atol=1e-4)
+            assert truth == whole.truth
+            assert [t.to_dict() for t in truth] == [t.to_dict() for t in whole.truth]
+            assert plant_recs == whole.plants
+        kinds = {t.kind for t in whole.truth}  # the truth compared above is not empty
+        assert "test_case_tick" in kinds and ("blink" in kinds) == (cond.name == "eyes_open")
         [bursts] = [p for p in whole.plants if p.kind == "rhythmic_bursts"]
         assert len(bursts.params["bursts_s"]) >= 3
         # FocalSlow is silenced with eyes open, so it has no record there

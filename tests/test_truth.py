@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import warnings
 
@@ -17,9 +19,11 @@ from open_eeg_synth.casefile.truth import (
 )
 from open_eeg_synth.recipes import resting_case
 
+_BURSTS = RhythmicBursts(("Fz",), burst_s=(0.5, 1.0), gap_s=(0.5, 1.5))
+
 
 def test_truth_dict_contents_and_sealed_roundtrip(tmp_path):
-    case = make_case(resting_case(51, duration_s=6.0, plants=(FocalSlow("F7"),)))
+    case = make_case(resting_case(51, duration_s=6.0, plants=(FocalSlow("F7"), _BURSTS)))
     d = case_truth(case, {"eyes_closed": "a.edf", "eyes_open": "b.edf"})
     assert d["format"] == "open-eeg-synth/truth" and d["label"] == "synthetic"
     assert d["generator"]["signal_version"] == version.SIGNAL_VERSION
@@ -34,16 +38,28 @@ def test_truth_dict_contents_and_sealed_roundtrip(tmp_path):
     raw = p.read_bytes()
     assert raw.startswith(MAGIC) and b"focal_slow" not in raw  # compressed, not readable as text
     assert read_truth(p) == d
+    # a RhythmicBursts record carries its condition's bursts, [on, off] s in the recording (§4.4)
+    got = {}
+    for cond, rec in d["recordings"].items():
+        got[cond] = rec["plants"][1]["params"]["bursts_s"]
+        assert len(got[cond]) >= 2 and got[cond] == sorted(got[cond])
+        assert all(0.0 <= on < off <= 6.0 for on, off in got[cond])
+        assert got[cond] == case.recordings[cond].plants[1].params["bursts_s"]
+    assert got["eyes_closed"] != got["eyes_open"]  # each condition draws its own bursts
+    assert json.loads(json.dumps(d)) == d  # the intervals are plain JSON
     with pytest.raises(ValueError):
         (tmp_path / "bad").write_bytes(b"nope")
         read_truth(tmp_path / "bad")
 
 
 def test_render_layers_reproduces_and_detects_mismatch():
-    case = make_case(resting_case(52, duration_s=4.0))
+    case = make_case(resting_case(52, duration_s=4.0, plants=(_BURSTS,)))
     d = case_truth(case, {"eyes_closed": "a.edf", "eyes_open": "b.edf"})
     rec = render_layers(d, "eyes_open")
     assert np.allclose(rec.layers["brain"], case.recordings["eyes_open"].layers["brain"], atol=1e-3)
+    # the plant records, burst times included, come back exactly as the truth file has them
+    assert [p.to_dict() for p in rec.plants] == d["recordings"]["eyes_open"]["plants"]
+    assert rec.plants[0].params["bursts_s"]
     d["recordings"]["eyes_open"]["layer_rms_uv"]["brain"][0] *= 2.0
     with pytest.raises(LayerMismatchError):
         render_layers(d, "eyes_open")
@@ -119,26 +135,10 @@ def test_render_layers_warns_only_when_the_signal_version_differs():
     d["generator"]["version"] = "0.0.0-not-the-real-version"
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        render_layers(d, "eyes_open")
+        # the version check comes first; an unknown condition then stops before rendering
+        with pytest.raises(ValueError, match="no_such_condition"):
+            render_layers(d, "no_such_condition")
     d["generator"]["signal_version"] = version.SIGNAL_VERSION + 1
     with pytest.warns(UserWarning, match="0.0.0-not-the-real-version") as caught:
         render_layers(d, "eyes_open")
     assert f"this is {version.__version__}" in str(caught[0].message)
-
-
-def test_rhythmic_bursts_carry_their_burst_times_through_the_truth_file():
-    """A RhythmicBursts record carries its condition's burst intervals, [on, off] seconds within
-    the recording (DESIGN §4.4), as JSON reads them back, and render_layers reproduces them."""
-    bursts = RhythmicBursts(("Fz",), burst_s=(0.5, 1.0), gap_s=(0.5, 1.5))
-    case = make_case(resting_case(53, duration_s=6.0, artifacts=(), plants=(bursts,)))
-    d = json.loads(json.dumps(case_truth(case, {"eyes_closed": "a.edf", "eyes_open": "b.edf"})))
-    got = {}
-    for cond in ("eyes_closed", "eyes_open"):
-        [written] = d["recordings"][cond]["plants"]
-        got[cond] = written["params"]["bursts_s"]
-        assert len(got[cond]) >= 2 and got[cond] == sorted(got[cond])
-        assert all(0.0 <= on < off <= 6.0 for on, off in got[cond])
-        assert got[cond] == case.recordings[cond].plants[0].params["bursts_s"]
-    assert got["eyes_closed"] != got["eyes_open"]  # each condition draws its own bursts
-    rec = render_layers(d, "eyes_open")
-    assert [p.to_dict() for p in rec.plants] == d["recordings"]["eyes_open"]["plants"]

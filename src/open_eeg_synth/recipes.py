@@ -10,7 +10,7 @@ from open_eeg_synth.brain.state import StateSegment, StateTimeline
 from open_eeg_synth.case import ArtifactSpec, CaseSpec, ConditionSpec
 from open_eeg_synth.channels import CHANNELS_19
 
-# Calibration (DESIGN §4.3 "M2 re-derives amp_uv", §9.1 targets). The feasibility test's
+# Calibration (DESIGN §4.3 amplitude convention, §9.1 targets). The feasibility test's
 # amplitudes were set in its empirical convention; under the analytic convention (§4.3, §11.6) the
 # resting model was re-tuned on MEDIANS over 96 subjects (case seeds 100-195, `resting_case(seed,
 # duration_s=60, artifacts=())`, brain + sensor noise, perturbed head), measured as DESIGN §9.1

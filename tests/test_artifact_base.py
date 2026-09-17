@@ -508,9 +508,9 @@ def test_min_gap_after_an_exclusive_push_is_measured_from_the_pushed_event_end()
 
 
 def test_truth_boundary_uses_the_stored_integer_onset_not_a_recomputed_float():
-    """At fs=100, `29 / fs * fs` evaluates to 28.999999999999996, just under 29 - the exact
-    reproducer from the re-review's boundary.py. truth() must still exclude an event whose onset
-    is exactly at the render boundary (mutation X6: filtering on the recomputed float again)."""
+    """At fs=100, `29 / fs * fs` evaluates to 28.999999999999996, just under 29. truth() must
+    still exclude an event whose onset is exactly at the render boundary, which filtering on the
+    recomputed float would not."""
     tl = StateTimeline.constant("eyes_open")
     art = Pulse(rate_by_state={"eyes_open": 1.0}, length_s=0.05)
     art.bind(_ctx(tl, seed=1))
@@ -638,7 +638,7 @@ def test_onset_check_also_fires_on_a_rebuild_after_a_push():
 def test_rebind_to_the_same_occupancy_matches_a_fresh_bind():
     """A same-occupancy rebind must drop the artifact's own pre-rebind spans - otherwise its new
     events get pushed around by its own stale ones, and the result depends on how many times it
-    was rebound rather than matching a fresh instance with the same seed (round 3 finding 3)."""
+    was rebound rather than matching a fresh instance with the same seed."""
     tl = StateTimeline.constant("eyes_open")
     occ = Occupancy()
     art = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
@@ -663,7 +663,7 @@ def test_refused_bind_leaves_the_artifact_rendering_exactly_as_before():
     """A refused bind (joining an Occupancy that has already advanced) must not half-migrate the
     artifact (switch its ctx, drop it from the old occupancy) before the join is validated - it
     must go on rendering exactly as it would have if the failed bind() call had never happened
-    at all (round 3 finding 4)."""
+    at all."""
     tl = StateTimeline.constant("eyes_open")
     occ1, occ2 = Occupancy(), Occupancy()
     a = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.2)
@@ -693,8 +693,7 @@ def test_refused_bind_leaves_the_artifact_rendering_exactly_as_before():
 def test_rebuild_loop_rechecks_after_a_rebuild_that_changes_length():
     """A rebuild that lands somewhere the event's own natural length is different (here:
     longer) must have that new placement re-checked against occupancy too - rebuilding once and
-    trusting the result, without re-checking, can still leave an overlap (round 3 finding 5,
-    mirrors the re-reviewer's Z13 mutation)."""
+    trusting the result, without re-checking, can still leave an overlap."""
 
     class Grow(EventArtifact):
         kind = "test_grow"
@@ -732,7 +731,7 @@ def test_rebuild_loop_rechecks_after_a_rebuild_that_changes_length():
 def test_exclusive_tie_break_goes_to_the_first_registered_artifact():
     """When two exclusive artifacts' next candidates land at the exact same sample, the tie must
     resolve to whichever was registered (bound) first - deterministic, independent of anything
-    else (round 3 finding 5)."""
+    else."""
     tl = StateTimeline.constant("eyes_open")
     occ = Occupancy()
     a = Pulse(rate_by_state={"eyes_open": 1.0}, exclusive=True, length_s=0.5)
@@ -881,10 +880,8 @@ def test_pruning_a_dataclass_plugins_span_does_not_crash():
     mutable `@dataclass` plug-in gets `__eq__` (the dataclass default) without `__hash__` (which
     a non-frozen dataclass sets to None precisely because it defined `__eq__`), so adding one to
     a `set` raised ``TypeError: unhashable type`` on this Occupancy's very first prune."""
-    # Different field values, so the two instances are not value-equal to each other: this
-    # isolates the `_pruned_owners` set/dict from `_exclusive`'s own (identity-first) membership
-    # check, and lands squarely on `_prune_stale_spans`, which is where the old set-typed
-    # `_pruned_owners` actually raised.
+    # Different field values, so the two instances are not value-equal to each other: this lands
+    # squarely on `_prune_stale_spans`, which is where a set-typed `_pruned_owners` would raise.
     Peer = _dataclass_peer_cls({"kind": "test_dataclass_peer_unhashable"})
     try:
         tl = StateTimeline.constant("eyes_open")
@@ -905,10 +902,9 @@ def test_pruning_keys_owners_by_identity_not_by_equality():
     """A value-equal-but-distinct peer must not be treated as "the same owner" when
     `add_exclusive` decides whether a same-occupancy rebind is still safe: pruning must be keyed
     on which *object* had a span discarded, not on its current field values. `b` never itself
-    binds to `occ` (binding a second, value-equal artifact would collide with `a` in
-    `_exclusive`'s own equality-based membership check - a separate, pre-existing wrinkle this
-    item does not touch); it only ever owns one span there, exactly as a real peer's
-    already-pruned history would look from `add_exclusive`'s point of view."""
+    binds to `occ` (test_value_equal_plugins_are_separate_participants covers two value-equal
+    participants); it only ever owns one span there, exactly as a real peer's already-pruned
+    history would look from `add_exclusive`'s point of view."""
     Peer = _dataclass_peer_cls({"kind": "test_dataclass_peer_hashable"}, unsafe_hash=True)
     try:
         tl = StateTimeline.constant("eyes_open")
