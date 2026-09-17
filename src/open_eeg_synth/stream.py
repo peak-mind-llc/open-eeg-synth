@@ -15,7 +15,11 @@ does.
 
 A label the head model lacks (a 10-10 site such as Fpz or Oz, an ear reference, anything else that
 is not a heart label) does not raise, as it does not in ``classic``: it becomes an unmodelled row
-that carries sensor noise only, and the source warns once, naming those labels (DESIGN §7.3).
+that carries sensor noise only, and the source warns once, naming those labels (DESIGN §7.3). A
+source with no modelled EEG label but at least one heart label is a legitimate heart-only
+recording: it never builds the brain, so construction skips that cost. A source whose labels are
+all unmodelled has nothing to render at all, which is almost always a montage mistake, so it
+raises ``ValueError`` naming them instead of silently building a noise-only source.
 
 ``.truth`` grows for as long as the stream runs — it is every artifact event whose onset has been
 rendered, and nothing here caches or discards it. A recording application that streams for hours
@@ -66,7 +70,9 @@ class StreamSource:
     label that is neither a heart label nor a head-model channel is an unmodelled row: it carries
     sensor noise only, drawn from its own ``stream:unmodelled`` stream so the modelled rows are the
     same as without it, and is listed in :attr:`unmodelled_labels` (it may repeat; each row gets its
-    own noise).
+    own noise). With no modelled EEG label at all, a source needs at least one heart label
+    (a heart-only recording, which never builds the brain/engine) or it raises ``ValueError``
+    naming the labels, none of which could be rendered.
     """
 
     def __init__(
@@ -106,26 +112,44 @@ class StreamSource:
             else:
                 self._eeg_rows.append(i)
         self._unmodelled_labels = tuple(self.labels[i] for i in self._unmodelled_rows)
+        if not self._eeg_rows and not self._hr_rows:
+            raise ValueError(
+                f"StreamSource: {', '.join(self._unmodelled_labels)} match no head-model "
+                "channel and no heart label either; a source needs at least one modelled EEG "
+                "or heart-rate label"
+            )
         self.timeline = timeline or StateTimeline.constant("eyes_open")
-        self.spec = CaseSpec(
-            seed=self._seed,
-            fs=self.srate,
-            channels=tuple(eeg_labels),
-            perturb_head=perturb_head,
-            brain=brain or resting_brain(),
-            artifacts=tuple(artifacts) if artifacts is not None else ordinary_artifacts(),
-            sensor=sensor or SensorSpec(),
-            conditions=(ConditionSpec("stream", math.inf, self.timeline),),
-        )
-        # warned only once the spec is valid (a duplicate modelled label raises first)
+        sensor_spec = sensor or SensorSpec()
+        if self._eeg_rows:
+            self.spec = CaseSpec(
+                seed=self._seed,
+                fs=self.srate,
+                channels=tuple(eeg_labels),
+                perturb_head=perturb_head,
+                brain=brain or resting_brain(),
+                artifacts=tuple(artifacts) if artifacts is not None else ordinary_artifacts(),
+                sensor=sensor_spec,
+                conditions=(ConditionSpec("stream", math.inf, self.timeline),),
+            )
+        else:
+            # heart-only, or heart plus unmodelled rows: nothing to render on the head model, so
+            # building the brain/engine (the ~0.5 s head perturbation and mixing-matrix cost) is
+            # skipped entirely (DESIGN §7.3).
+            self.spec = None
+        # warned only once past any duplicate-modelled-label ValueError that building self.spec
+        # above would have raised first
         if self._unmodelled_labels:
             warnings.warn(
                 f"StreamSource: {', '.join(self._unmodelled_labels)} not in the head model; "
                 "these unmodelled rows carry sensor noise only",
                 stacklevel=2,
             )
-        self.subject = make_subject(self.spec)
-        self.engine = make_engine(self.spec, self.subject, self.spec.conditions[0])
+        self.subject = make_subject(self.spec) if self.spec is not None else None
+        self.engine = (
+            make_engine(self.spec, self.subject, self.spec.conditions[0])
+            if self.spec is not None
+            else None
+        )
         self.heart = (
             HeartSource(self.srate, stream_seed(self._seed, "stream:heart"))
             if self._hr_rows
@@ -134,7 +158,7 @@ class StreamSource:
         self.unmodelled = (
             SensorNoise(
                 len(self._unmodelled_rows),
-                self.spec.sensor.white_uv,
+                sensor_spec.white_uv,
                 stream_seed(self._seed, "stream:unmodelled"),
             )
             if self._unmodelled_rows
@@ -159,15 +183,17 @@ class StreamSource:
     @property
     def truth(self) -> list[TruthRecord]:
         """Every artifact event whose onset lies inside the span rendered so far. An event pushed
-        later (past a refractory gap or an exclusive peer) appears once its onset is rendered."""
-        return self.engine.truth()
+        later (past a refractory gap or an exclusive peer) appears once its onset is rendered.
+        A heart-only source (no brain/engine built) never has any: ``[]``."""
+        return [] if self.engine is None else self.engine.truth()
 
     def next_chunk(self, n_samples: int) -> np.ndarray:
         if n_samples <= 0:
             raise ValueError("n_samples must be positive")
-        frame = self.engine.render(self._pos, n_samples)
         out = np.zeros((len(self.labels), n_samples), dtype=np.float32)
-        out[self._eeg_rows] = frame.mixed
+        if self.engine is not None:
+            frame = self.engine.render(self._pos, n_samples)
+            out[self._eeg_rows] = frame.mixed
         if self.unmodelled is not None:
             out[self._unmodelled_rows] = self.unmodelled.render(self._pos, n_samples)
         if self.heart is not None:

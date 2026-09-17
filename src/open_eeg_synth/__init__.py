@@ -11,6 +11,7 @@ The names below are imported on first use (a module ``__getattr__``), so importi
 from __future__ import annotations
 
 import importlib
+import types
 from typing import TYPE_CHECKING, Any
 
 from open_eeg_synth.version import SIGNAL_VERSION, __version__
@@ -63,4 +64,16 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(__all__))
+    # __getattr__ caches a loaded name straight into globals(), and importing a submodule (here,
+    # directly or through _LAZY's importlib.import_module) sets it as an attribute of this
+    # package the same way, so both already show up in globals(). A plain set(globals()) also
+    # drags in this module's own plumbing (_LAZY, its imports), which is not part of the public
+    # API: keep only the submodules (this module's own attribute genuinely became one) and
+    # __all__'s names.
+    prefix = f"{__name__}."
+    submodules = {
+        name
+        for name, value in globals().items()
+        if isinstance(value, types.ModuleType) and value.__name__.startswith(prefix)
+    }
+    return sorted(set(__all__) | submodules)

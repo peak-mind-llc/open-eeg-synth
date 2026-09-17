@@ -131,6 +131,43 @@ def test_labels_the_head_model_lacks_carry_sensor_noise_only():
         StreamSource(["O1", "o1", "X1"], 256.0, seed=1)
 
 
+def test_all_unmodelled_labels_raise_naming_them():
+    """A source with no heart label and no head-model channel at all has nothing to render (no
+    brain, no heart, only sensor noise on every row); that is almost always a montage mistake, so
+    it raises rather than silently building a noise-only source (DESIGN §7.3)."""
+    with pytest.raises(ValueError, match="Fpz, A1"):
+        StreamSource(["Fpz", "A1"], 256.0, seed=1)
+    with pytest.raises(ValueError, match="X1"):
+        StreamSource(["X1"], 256.0, seed=1)
+    # one real heart label alongside is enough to make it legitimate (heart-only, no raise)
+    with pytest.warns(UserWarning, match="Fpz, A1"):
+        StreamSource(["Fpz", "A1", "HR"], 256.0, seed=1)
+
+
+def test_heart_only_source_skips_building_the_brain():
+    """A source whose labels are only heart labels (and, optionally, unmodelled ones) is a
+    legitimate heart-only recording (DESIGN §7.3): it never builds the brain/engine, so
+    construction skips the ~0.5 s head perturbation and mixing-matrix cost, and its ECG and
+    unmodelled-noise rows still work."""
+    t0 = time.perf_counter()
+    hr_only = StreamSource(["HR", "ECG"], 256.0, seed=3)
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 0.15  # a built brain costs ~0.5 s; this must not pay it
+    assert hr_only.engine is None
+    assert hr_only.truth == []
+    chunk = hr_only.next_chunk(512)
+    assert chunk.shape == (2, 512) and np.isfinite(chunk).all()
+    assert np.array_equal(chunk[0], chunk[1])  # both HR rows carry the same ECG
+    assert chunk[0].max() > 120.0 and _kurt(chunk[0]) > 3.0  # ECG-shaped, as in Q21 above
+
+    with pytest.warns(UserWarning, match="Fpz"):
+        mixed = StreamSource(["HR", "Fpz"], 256.0, seed=3, sensor=SensorSpec(white_uv=4.0))
+    assert mixed.engine is None and mixed.unmodelled_labels == ("Fpz",)
+    m = mixed.next_chunk(512)
+    assert np.array_equal(m[0], chunk[0])  # same heart draw, same seed, same position
+    assert np.isclose(m[1].astype(float).std(), 4.0, rtol=0.1)
+
+
 def test_chunk_shape_dtype_scale_and_determinism():
     a = StreamSource(Q21, 256.0, seed=7)
     b = StreamSource(Q21, 256.0, seed=7)

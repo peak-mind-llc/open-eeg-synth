@@ -588,8 +588,11 @@ every edge it draws; an edge's time is the sample where its 0.3 s ramp is half-w
 still on at the end of the recording is cut there. `case.plant_records(spec, engine, condition)`
 builds a condition's plant records from what `engine` has rendered, so the intervals do not depend
 on how the rendering was chunked (tested with random partitions), and `render_layers` reproduces
-them. The intervals are the gate's; the plant's `state_gain` still scales the rhythm inside them.
-Each condition draws its own bursts.
+them. The gate keeps firing through a state where the plant's own `state_gain` is 0 (the state
+only scales the rendered rhythm to zero there, it does not stop the gate), so the recorded
+intervals are the gate's, confined to the states where `state_gain` is not zero: one that falls
+entirely inside a silent state is dropped, and one that straddles a silent stretch is cut to its
+audible part. Each condition draws its own bursts.
 
 The feasibility test showed one plant can register as several findings in a consumer's catalogue,
 sometimes at a neighbouring site — that mapping (plant → set of findings) lives in the consumer.
@@ -1317,10 +1320,17 @@ labels and lists them, as given, in `unmodelled_labels`. Unmodelled labels may r
 row gets its own noise. The label list must not be empty, and `srate` must be finite and positive (a
 NaN or infinite rate used to fail deep inside the network wiring).
 
+A source with no modelled EEG label but at least one heart label is a legitimate heart-only
+recording: it never builds the brain/engine, so construction skips the head-perturbation and
+mixing-matrix cost below. A source whose labels are all unmodelled (no heart label, no head-model
+channel among them) has nothing to render — almost always a montage mistake — so it raises
+`ValueError` naming those labels rather than silently building a noise-only source.
+
 Internally the source is one `CaseSpec` with a single condition named `"stream"` of unbounded duration
 (`duration_s = inf`, serialised as null), with the resting brain, the ordinary artifacts and the
 default sensor noise unless overridden, built through the same `make_subject` and `make_engine` as a
-case; its time streams are therefore `stream:background`, `stream:artifact:blink:0` and so on.
+case (skipped for a heart-only source, per above); its time streams are therefore
+`stream:background`, `stream:artifact:blink:0` and so on.
 `seed=None` draws a fresh seed and exposes it as `.seed`, and a second source built with that seed
 reproduces the signal, the truth and the markers. The default timeline is a constant `"eyes_open"`; a
 recording application may pass its own scenario. Chunk size is unlimited, chunks are phase-continuous,
@@ -1766,6 +1776,12 @@ addopts = "-ra -m 'not realism and not slow'"   # markers: realism, slow
   treats as satisfying the git requirement.
 - **Releases**: tag `vX.Y.Z` on `main` after CI is green; `CHANGELOG.md` entry; consumers bump the tag.
   v0.2.0 = this design; v0.1.x = `classic` only.
+- **macOS with numpy older than 2.3** (the last numpy release that still supports Python 3.10):
+  Accelerate's `matmul` raises spurious `RuntimeWarning`s ("encountered in matmul") during the
+  brain layer's matrix work; the samples are identical either way. A consuming application can
+  silence them with `warnings.filterwarnings("ignore", "encountered in matmul", RuntimeWarning)`;
+  this package does not suppress them itself, so it never hides a real warning from consumer code
+  (README "Known gaps").
 
 ---
 

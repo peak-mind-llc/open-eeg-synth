@@ -193,6 +193,11 @@ the next section before relying on these numbers.
   far from the template head, some of those values are off by more than a factor of three. The
   19-channel head model never needs this, because all its channels are in the file.
 - **No evoked responses yet.** Streams can emit event markers but add no response to them.
+- **macOS with numpy older than 2.3 (the last numpy release that still supports Python 3.10)**:
+  Accelerate's `matmul` raises spurious `RuntimeWarning`s ("encountered in matmul") during the
+  brain layer's matrix work. The samples are identical either way; a consuming application can
+  silence them with `warnings.filterwarnings("ignore", "encountered in matmul", RuntimeWarning)`.
+  The package itself does not suppress them, so it never hides a real warning from your own code.
 
 ## Development
 

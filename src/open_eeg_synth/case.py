@@ -393,13 +393,49 @@ def _plant_is_silent(plant: Plant, states: set[str]) -> bool:
     return all(gain.get(s, 1.0) == 0.0 for s in states)
 
 
+def _audible_spans_s(gain: dict[str, float], timeline: StateTimeline) -> list[tuple[float, float]]:
+    """The timeline's segments where ``gain`` is not exactly zero, collapsed into spans
+    (adjacent audible segments merged); the complement is where a bursting plant's own
+    ``state_gain`` mutes it (§4.4)."""
+    spans: list[list[float]] = []
+    for seg in timeline.segments:
+        if gain.get(seg.state, 1.0) == 0.0:
+            continue
+        if spans and spans[-1][1] == seg.t0_s:
+            spans[-1][1] = seg.t1_s
+        else:
+            spans.append([seg.t0_s, seg.t1_s])
+    return [(a, b) for a, b in spans]
+
+
+def _confine_bursts_to_gain(
+    bursts: list[list[float]], gain: dict[str, float], timeline: StateTimeline
+) -> list[list[float]]:
+    """Cut ``bursts`` (``[on, off]`` pairs from the gate) to the parts of ``timeline`` where
+    ``gain`` is nonzero: the gate keeps firing through a silent state (``state_gain`` only
+    multiplies the rendered rhythm to zero there), so an interval entirely inside one is dropped
+    and one that straddles a silent stretch is cut to its audible parts (§4.4)."""
+    if not gain or not any(g == 0.0 for g in gain.values()):
+        return bursts
+    spans = _audible_spans_s(gain, timeline)
+    out: list[list[float]] = []
+    for on, off in bursts:
+        for a, b in spans:
+            lo, hi = max(on, a), min(off, b)
+            if lo < hi:
+                out.append([lo, hi])
+    return out
+
+
 def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> list[PlantRecord]:
     """The plant records of one condition rendered by ``engine`` (DESIGN §4.4).
 
     A plant that the condition's timeline silences everywhere has no record. A plant whose
     compiled rhythm is gated in bursts (``RhythmicBursts``) carries this condition's burst
     intervals as ``params["bursts_s"]``: ``[on, off]`` pairs in seconds, up to what ``engine``
-    has rendered (``Engine.position``), so a chunked rendering gives the same records.
+    has rendered (``Engine.position``), so a chunked rendering gives the same records; an
+    interval the plant's own ``state_gain`` silences entirely is dropped, and one that straddles
+    a silent stretch is cut to its audible part.
     """
     states = {seg.state for seg in condition.timeline.segments}
     brain = next(lay for lay in engine.layers if isinstance(lay, BrainLayer))
@@ -413,6 +449,8 @@ def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> l
             bursts = sorted(
                 iv for name in gated for iv in brain.burst_intervals_s(name, engine.position)
             )
+            gain = getattr(p, "state_gain", None) or {}
+            bursts = _confine_bursts_to_gain(bursts, gain, condition.timeline)
             rec = replace(rec, params={**rec.params, "bursts_s": bursts})
         out.append(rec)
     return out

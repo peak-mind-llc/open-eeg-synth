@@ -17,6 +17,7 @@ from open_eeg_synth.artifacts import (
     patterns,
 )
 from open_eeg_synth.artifacts.registry import ARTIFACTS, register
+from open_eeg_synth.brain.layer import BrainLayer
 from open_eeg_synth.brain.plants import (
     FocalSlow,
     LateralImbalance,
@@ -126,7 +127,15 @@ def test_make_subject_warns_once_per_process_about_a_broken_entry_point(monkeypa
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         make_subject(spec)
-    assert caught == []
+    # filtered to the entry-point warning itself (category and message): an unrelated platform
+    # warning (e.g. Accelerate's spurious matmul RuntimeWarning on macOS with numpy < 2.3, README
+    # "Known gaps") must not fail this test.
+    repeated = [
+        w
+        for w in caught
+        if issubclass(w.category, UserWarning) and "make_subject_still_broken" in str(w.message)
+    ]
+    assert repeated == []
 
 
 class _Tick(EventArtifact):
@@ -608,3 +617,34 @@ def test_whole_case_is_chunk_invariant(_test_kinds):
         assert len(bursts.params["bursts_s"]) >= 3
         # FocalSlow is silenced with eyes open, so it has no record there
         assert ("focal_slow" in {p.kind for p in whole.plants}) == (cond.name != "eyes_open")
+
+
+def test_bursting_plant_confined_to_states_where_its_gain_is_nonzero():
+    """A RhythmicBursts plant's recorded bursts (``params["bursts_s"]``) are cut to the states
+    where its own ``state_gain`` is not zero (DESIGN §4.4). The burst gate still fires during a
+    silent state (``state_gain`` multiplies the rhythm to zero there; it does not stop the gate),
+    so an interval entirely inside "drowsy" (``state_gain={"drowsy": 0.0}``) must be dropped from
+    the record, and one that straddles the eyes_closed/drowsy boundary must be cut to its audible
+    (eyes_closed) part."""
+    plant = RhythmicBursts(
+        ("Fz", "Cz"), burst_s=(0.4, 0.8), gap_s=(0.4, 0.8), state_gain={"drowsy": 0.0}
+    )
+    spec = resting_case(61, duration_s=12.0, drowsy_from_s=6.0, plants=(plant,), artifacts=())
+    cond = spec.conditions[0]
+    assert cond.name == "eyes_closed"  # drowsy is inserted into eyes_closed only (§7.2)
+    subject = make_subject(spec)
+    eng = make_engine(spec, subject, cond)
+    eng.render_all(int(cond.duration_s * spec.fs))
+    brain = next(lay for lay in eng.layers if isinstance(lay, BrainLayer))
+    [name] = [r.name for r in plant.rhythms()]
+    raw = brain.burst_intervals_s(name, eng.position)
+
+    # sanity: seed 61's draw exercises all three cases, or this test would prove nothing
+    assert any(off <= 6.0 for _, off in raw)  # a burst entirely before the drowsy boundary
+    assert any(on >= 6.0 for on, _ in raw)  # a burst entirely inside drowsy
+    assert any(on < 6.0 < off for on, off in raw)  # one straddles the boundary
+
+    [rec] = plant_records(spec, eng, cond)
+    expected = sorted([on, min(off, 6.0)] for on, off in raw if on < 6.0)
+    assert rec.params["bursts_s"] == expected
+    assert all(off <= 6.0 for _, off in rec.params["bursts_s"])
