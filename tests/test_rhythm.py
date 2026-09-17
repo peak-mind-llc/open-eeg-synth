@@ -216,10 +216,6 @@ def test_hemisphere_gain_applied_after_scale():
     tl = StateTimeline.constant("eyes_closed")
     spec = resting_brain().rhythms[1]  # theta: clean site placement, no region overlap
     assert spec.name == "theta"
-    # At the 12 mm patches this test was written for. Task 32 widened the recipe's theta patches to
-    # 40 mm, which spreads the (ungained) right and midline patches onto F3, so the same 0.4 gain
-    # then reads 0.40-0.45 there instead of 0.25-0.27; the thresholds below belong to 12 mm.
-    spec = dataclasses.replace(spec, width_mm=12.0)
     f3, f4 = CHANNELS_19.index("F3"), CHANNELS_19.index("F4")
     l_factors, r_factors = [], []
     for seed in range(1, 6):
