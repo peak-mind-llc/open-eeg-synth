@@ -17,8 +17,9 @@ All notable changes to this project are documented here. The format follows
 - A brain layer: smoothed 1/f background, a cortical network with conduction delays, and mirrored
   rhythm generators (alpha, theta, beta, sensorimotor rhythm) in a resting recipe tuned against public
   EEG; planted patterns (`FocalSlow`, `RhythmicBursts`, `LateralImbalance`, `WidespreadExcess`,
-  `PeakShift`, `ReducedRhythm`) with truth records; and a state timeline (eyes closed, eyes open,
-  drowsy) that drives rhythm gains and artifact rates. Plant and rhythm sites are canonicalised
+  `PeakShift`, `ReducedRhythm`) with truth records (a `RhythmicBursts` record lists the bursts it
+  produced, `params["bursts_s"]`); and a state timeline (eyes closed, eyes open, drowsy) that drives
+  rhythm gains and artifact rates. Plant and rhythm sites are canonicalised
   against the head model's channel names (`FocalSlow("f7") == FocalSlow("F7")`), and a site named
   twice raises.
 - An artifact plug-in framework (event and transform artifacts, a registry with entry-point

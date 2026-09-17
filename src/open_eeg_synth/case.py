@@ -7,7 +7,7 @@ import json
 import math
 import warnings
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -359,8 +359,33 @@ def _plant_is_silent(plant, states: set[str]) -> bool:
     return all(gain.get(s, 1.0) == 0.0 for s in states)
 
 
+def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> list:
+    """The plant records of one condition rendered by ``engine`` (DESIGN §4.4).
+
+    A plant that the condition's timeline silences everywhere has no record. A plant whose
+    compiled rhythm is gated in bursts (``RhythmicBursts``) carries this condition's burst
+    intervals as ``params["bursts_s"]``: ``[on, off]`` pairs in seconds, up to what ``engine``
+    has rendered (``Engine.position``), so a chunked rendering gives the same records.
+    """
+    states = {seg.state for seg in condition.timeline.segments}
+    brain = next(lay for lay in engine.layers if isinstance(lay, BrainLayer))
+    out = []
+    for p in spec.plants:
+        if _plant_is_silent(p, states):
+            continue
+        rec = p.record()
+        gated = [r.name for r in p.rhythms() if r.burst is not None]
+        if gated:
+            bursts = sorted(
+                iv for name in gated for iv in brain.burst_intervals_s(name, engine.position)
+            )
+            rec = replace(rec, params={**rec.params, "bursts_s": bursts})
+        out.append(rec)
+    return out
+
+
 def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Recording:
-    """Render one condition's layers and attach its timeline and its (un-silenced) plants.
+    """Render one condition's layers and attach its timeline and its plant records.
 
     The single per-condition body shared by :func:`make_case` and
     :func:`casefile.truth.render_layers`, so a truth file's re-rendered plants always match what
@@ -376,8 +401,7 @@ def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -
     eng = make_engine(spec, subject, condition)
     rec = eng.render_all(int(round(condition.duration_s * spec.fs)))
     rec.timeline = condition.timeline
-    states = {seg.state for seg in condition.timeline.segments}
-    rec.plants = [p.record() for p in spec.plants if not _plant_is_silent(p, states)]
+    rec.plants = plant_records(spec, eng, condition)
     return rec
 
 

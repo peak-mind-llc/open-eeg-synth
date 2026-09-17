@@ -36,6 +36,7 @@ from open_eeg_synth.case import (
     make_case,
     make_engine,
     make_subject,
+    plant_records,
 )
 from open_eeg_synth.channels import CHANNELS_19
 from open_eeg_synth.headmodel import HeadModel
@@ -533,3 +534,9 @@ def test_case_with_plants_is_chunk_invariant():
             parts.append(eng.render(t0, n).mixed)
             t0 += n
         assert np.allclose(np.concatenate(parts, axis=1), whole.mixed, atol=1e-4)
+        # the plant records, burst times included (DESIGN §4.4), do not depend on the chunking
+        assert plant_records(spec, eng, cond) == whole.plants
+        [bursts] = [p for p in whole.plants if p.kind == "rhythmic_bursts"]
+        assert len(bursts.params["bursts_s"]) >= 3
+        # FocalSlow is silenced with eyes open, so it has no record there
+        assert ("focal_slow" in {p.kind for p in whole.plants}) == (cond.name != "eyes_open")

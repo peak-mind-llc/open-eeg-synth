@@ -529,7 +529,7 @@ class PlantRecord:
     amp_uv: float | None                     # None for a modifier-only plant
     onset_s: float                           # 0.0: plants are present for the whole recording
     offset_s: float | None                   # None
-    params: dict                             # the plant's own fields, JSON-safe (a modifier's target rhythm is params["rhythm"])
+    params: dict                             # the plant's own fields, JSON-safe (a modifier's target rhythm is params["rhythm"]; a bursting plant adds "bursts_s")
     description: str                         # generic prose
 ```
 
@@ -579,6 +579,16 @@ where it is zero (`"… present throughout (absent in eyes_open)"`). A plant who
 zero in every state that a condition's timeline contains renders nothing there, and its record is left
 out of that condition's plant list (`case.make_recording`, §7.2), so a truth file never lists a plant
 that cannot be seen. A modifier-only plant is never left out.
+
+**Burst times.** A `RhythmicBursts` record carries the bursts it actually produced in that
+condition, as `params["bursts_s"]`: a list of `[on, off]` pairs in seconds, sorted, within the
+recording. The burst gate draws its on/off edges in order from the rhythm's time stream and keeps
+every edge it draws; an edge's time is the sample where its 0.3 s ramp is half-way, and a burst still
+on at the end of the recording is cut there. `case.plant_records(spec, engine, condition)` builds a
+condition's plant records from what `engine` has rendered, so the intervals do not depend on how the
+rendering was chunked (tested with random partitions), and `render_layers` reproduces them. The
+intervals are the gate's; the plant's `state_gain` still scales the rhythm inside them. Each
+condition draws its own bursts.
 
 The feasibility test showed one plant can register as several findings in a consumer's catalogue,
 sometimes at a neighbouring site — that mapping (plant → set of findings) lives in the consumer.
@@ -1205,6 +1215,7 @@ def compiled_rhythms(spec: CaseSpec) -> tuple[RhythmSpec, ...]                  
 def make_subject(spec: CaseSpec) -> Subject
 def make_engine(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Engine
 def make_recording(spec: CaseSpec, subject: Subject, condition: ConditionSpec) -> Recording
+def plant_records(spec: CaseSpec, engine: Engine, condition: ConditionSpec) -> list[PlantRecord]   # §4.4
 def make_case(spec: CaseSpec) -> Case
 def case_id_for(spec: CaseSpec) -> str
 
@@ -1248,7 +1259,8 @@ the head, with its time stream `<condition>:artifact:<kind>:<i>` (`i` counts ins
 only, so adding another kind never moves these draws), its kind's subject stream and one `Occupancy`
 shared by the condition; and the sensor layer. Additive artifacts become layers, transform artifacts
 transforms. `make_recording` renders `round(duration_s · fs)` samples and attaches the condition's
-timeline and the plant records its timeline does not silence (§4.4). A non-finite `duration_s` raises
+timeline and its plant records (`plant_records`: the plants its timeline does not silence, a bursting
+plant with its burst times, §4.4). A non-finite `duration_s` raises
 `ValueError`: a whole recording needs an end, and an unbounded one is a stream (§7.3). `make_case`
 calls `make_subject` once and `make_recording` for each condition; `casefile.truth.render_layers`
 calls the same `make_recording`, so a re-rendered condition cannot drift from what `make_case` wrote.
@@ -1389,7 +1401,8 @@ default 2 × 240 s case writes about 6 kB. `case_truth(case, files)` builds the 
 ```
 
 `pattern_jitter` is keyed by artifact kind (`"eye_movement"`), not by map name. A condition's `plants`
-list leaves out plants that its timeline silences (§4.4).
+list leaves out plants that its timeline silences, and a `RhythmicBursts` record lists that
+condition's bursts in `params["bursts_s"]` (§4.4).
 
 **Re-rendering the layers.** Layers are not embedded by default: they are re-rendered on demand by
 `casefile.writer.render_layers(truth_dict, condition, *, rtol=1e-3) -> Recording` (defined in

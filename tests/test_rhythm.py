@@ -9,7 +9,14 @@ from scipy.signal import csd
 from scipy.signal import welch as sp_welch
 
 from open_eeg_synth.brain.placement import placed_centres, region_centres
-from open_eeg_synth.brain.rhythm import BurstGate, Rhythm, RhythmSpec, _orient_patches, _Oscillator
+from open_eeg_synth.brain.rhythm import (
+    BurstGate,
+    Rhythm,
+    RhythmSpec,
+    _Gate,
+    _orient_patches,
+    _Oscillator,
+)
 from open_eeg_synth.brain.state import StateSegment, StateTimeline
 from open_eeg_synth.channels import CHANNELS_19, MIRROR, canonical_label
 from open_eeg_synth.headmodel import load_head_model
@@ -133,6 +140,41 @@ def test_state_gain_and_burst_gate():
     y = rb.render(0, int(9 * FS))[CHANNELS_19.index("Fz")]
     active = np.abs(y).reshape(9, int(FS)).max(axis=1) > 1.0
     assert 2 <= active.sum() <= 4  # on for 1 s every 3 s, starting after the first off period
+
+
+def test_burst_gate_reports_the_bursts_it_renders_whatever_the_chunking():
+    """The gate keeps every edge it commits and reports its bursts as [on, off] seconds, each
+    edge at its ramp's half level and the last clipped to the rendered end (DESIGN §4.4): the
+    gate is 1 well inside every interval and 0 well outside all of them."""
+    fs, n_total = 100.0, 3000
+    burst = BurstGate(on_s=(0.5, 1.5), off_s=(0.5, 2.0), ramp_s=0.2)
+    whole = _Gate(burst, fs, np.random.default_rng(3))
+    g = whole.render(0, n_total)
+    got = whole.intervals_s(n_total)
+    assert len(got) > 5
+    k, half = np.arange(n_total), whole.nr / 2
+    inside, near = np.zeros(n_total, bool), np.zeros(n_total, bool)
+    for on, off in got:
+        a, z = round(on * fs), round(off * fs)
+        assert 0 <= a < z <= n_total
+        assert g[a] == pytest.approx(0.5)
+        if z < n_total:
+            assert g[z] == pytest.approx(0.5)
+        inside |= (k > a + half) & (k < z - half)
+        near |= (k >= a - half) & (k <= z + half)
+    assert np.all(g[inside] == 1.0) and np.all(g[~near] == 0.0)
+    assert np.any(inside) and not np.all(near)
+
+    rng = np.random.default_rng(0)
+    chunked = _Gate(burst, fs, np.random.default_rng(3))
+    t0 = 0
+    while t0 < n_total:
+        n = int(min(n_total - t0, rng.integers(1, 90)))
+        chunked.render(t0, n)
+        t0 += n
+    assert chunked.intervals_s(n_total) == got
+    cut = int(got[2][0] * fs) + 10  # an end inside the third burst clips it there
+    assert whole.intervals_s(cut) == got[:2] + [[got[2][0], cut / fs]]
 
 
 def test_rhythm_spec_roundtrip():

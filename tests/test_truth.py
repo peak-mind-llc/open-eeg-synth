@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from open_eeg_synth import version
-from open_eeg_synth.brain.plants import FocalSlow
+from open_eeg_synth.brain.plants import FocalSlow, RhythmicBursts
 from open_eeg_synth.case import make_case
 from open_eeg_synth.casefile.truth import (
     MAGIC,
@@ -116,3 +116,21 @@ def test_render_layers_warns_on_a_generator_version_mismatch():
     d["generator"]["version"] = "0.0.0-not-the-real-version"
     with pytest.warns(UserWarning, match="0.0.0-not-the-real-version"):
         render_layers(d, "eyes_open")
+
+
+def test_rhythmic_bursts_carry_their_burst_times_through_the_truth_file():
+    """A RhythmicBursts record carries its condition's burst intervals, [on, off] seconds within
+    the recording (DESIGN §4.4), as JSON reads them back, and render_layers reproduces them."""
+    bursts = RhythmicBursts(("Fz",), burst_s=(0.5, 1.0), gap_s=(0.5, 1.5))
+    case = make_case(resting_case(53, duration_s=6.0, artifacts=(), plants=(bursts,)))
+    d = json.loads(json.dumps(case_truth(case, {"eyes_closed": "a.edf", "eyes_open": "b.edf"})))
+    got = {}
+    for cond in ("eyes_closed", "eyes_open"):
+        [written] = d["recordings"][cond]["plants"]
+        got[cond] = written["params"]["bursts_s"]
+        assert len(got[cond]) >= 2 and got[cond] == sorted(got[cond])
+        assert all(0.0 <= on < off <= 6.0 for on, off in got[cond])
+        assert got[cond] == case.recordings[cond].plants[0].params["bursts_s"]
+    assert got["eyes_closed"] != got["eyes_open"]  # each condition draws its own bursts
+    rec = render_layers(d, "eyes_open")
+    assert [p.to_dict() for p in rec.plants] == d["recordings"]["eyes_open"]["plants"]

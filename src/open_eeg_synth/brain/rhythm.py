@@ -108,20 +108,41 @@ class _Oscillator:
 
 
 class _Gate:
-    """On/off gating with linear-ramp edges; transitions drawn in order (streaming-safe)."""
+    """On/off gating with linear-ramp edges; transitions drawn in order (streaming-safe).
+
+    Every edge drawn is also kept in ``committed`` (on and off samples alternate, starting with
+    an on), so the gate can report its bursts after any chunking (``intervals_s``).
+    """
 
     def __init__(self, burst: BurstGate, fs: float, rng: np.random.Generator) -> None:
         self.b, self.fs, self.rng = burst, fs, rng
         self.nr = max(1, int(round(burst.ramp_s * fs)))
         first_on = int(round(rng.uniform(*burst.off_s) * fs))
         self.edges: list[tuple[int, float]] = [(first_on, 1.0)]  # (sample, level after edge)
+        self.committed: list[int] = [first_on]
         self.base = 0.0  # level before the first stored edge
 
     def _extend(self, until: int) -> None:
         while self.edges[-1][0] < until + self.nr:
             s, lvl = self.edges[-1]
             dur = self.rng.uniform(*(self.b.on_s if lvl == 1.0 else self.b.off_s))
-            self.edges.append((s + int(round(dur * self.fs)), 0.0 if lvl == 1.0 else 1.0))
+            edge = s + int(round(dur * self.fs))
+            self.edges.append((edge, 0.0 if lvl == 1.0 else 1.0))
+            self.committed.append(edge)
+
+    def intervals_s(self, end: int) -> list[list[float]]:
+        """``[on, off]`` in seconds for every burst that starts before sample ``end``: each edge
+        at the sample where the ramp is half-way, the last ``off`` clipped to ``end``. Rendering
+        up to ``end`` has drawn every edge this needs (``_extend`` runs past it), so the answer
+        does not depend on how the rendering was chunked."""
+        out: list[list[float]] = []
+        for i in range(0, len(self.committed), 2):
+            on = self.committed[i]
+            if on >= end:
+                break
+            off = min(self.committed[i + 1], end)
+            out.append([on / self.fs, off / self.fs])
+        return out
 
     def render(self, t0: int, n: int) -> np.ndarray:
         self._extend(t0 + n)
@@ -291,6 +312,10 @@ class Rhythm:
         if self.gate is not None:
             gain = gain * self.gate.render(t0, n)
         return (self.scale * out * gain[None, :]).astype(np.float32)
+
+    def burst_intervals_s(self, end: int) -> list[list[float]]:
+        """This rhythm's bursts up to sample ``end`` (``_Gate.intervals_s``); [] without a gate."""
+        return [] if self.gate is None else self.gate.intervals_s(end)
 
     def truth(self) -> list:
         return []

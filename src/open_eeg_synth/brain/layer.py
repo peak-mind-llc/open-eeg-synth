@@ -110,6 +110,11 @@ class BrainLayer:
                 )
             )
 
+    def burst_intervals_s(self, rhythm: str, end: int) -> list[list[float]]:
+        """The bursts of the compiled rhythm named ``rhythm`` up to sample ``end`` (§4.4)."""
+        part = next(p for p in self.parts if p.name == f"brain.rhythm:{rhythm}")
+        return part.burst_intervals_s(end)
+
     def render(self, t0: int, n: int) -> np.ndarray:
         out = self.parts[0].render(t0, n).astype(np.float32)
         for p in self.parts[1:]:
