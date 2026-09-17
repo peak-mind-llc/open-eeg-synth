@@ -148,6 +148,19 @@ def head_model_channels(name: str = "colin27_19ch") -> tuple[str, ...]:
         return tuple(str(c) for c in z["channel_names"])
 
 
+@lru_cache(maxsize=1)
+def all_head_model_channels() -> tuple[str, ...]:
+    """Every channel name that a shipped head model knows, in first-seen order. Plant and rhythm
+    sites are canonicalised against this list on construction: a plant does not know which head
+    model its case will select, and the case's own head model still refuses a site it lacks when
+    the subject is drawn."""
+    seen: dict[str, None] = {}
+    for name in _available_head_models():
+        for c in head_model_channels(name):
+            seen.setdefault(c, None)
+    return tuple(seen)
+
+
 @lru_cache(maxsize=4)
 def load_head_model(name: str = "colin27_19ch") -> HeadModel:
     _require_known_head_model(name)

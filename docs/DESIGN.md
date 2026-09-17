@@ -229,6 +229,7 @@ class HeadModel:
 
 def load_head_model(name: str = "colin27_19ch") -> HeadModel             # cached per name
 def head_model_channels(name: str = "colin27_19ch") -> tuple[str, ...]  # channel names only
+def all_head_model_channels() -> tuple[str, ...]                        # every shipped model's names (§4.4)
 ```
 
 `load_head_model` and `head_model_channels` raise `ValueError` listing the head models that ship
@@ -555,7 +556,19 @@ modifiers add sites to one rhythm the site order follows the plant order.
 
 **Validation.** Every value must be finite, `f0_hz` must be positive (also after a `PeakShift`),
 factors must be at least 0, and `LateralImbalance.side` must be `"left"` or `"right"` (any other
-string, such as `"Left"`, used to do nothing). Plant kinds register by `kind` (`register_plant`; a
+string, such as `"Left"`, used to do nothing).
+
+**Site names.** `FocalSlow.site`, `RhythmicBursts.sites`, `WidespreadExcess.extra_sites`,
+`Modifier.extra_sites` and `RhythmSpec.sites` are canonicalised on construction with
+`channels.canonical_label` against the channel names of the shipped head models
+(`headmodel.all_head_model_channels()`, today the 19 of `colin27_19ch`), as a case's channels are
+(§7.2): `FocalSlow("f7")` equals `FocalSlow("F7")`, gives the same case id and records the site as
+`F7`, and an unknown site raises `UnknownChannelError` when the plant is built rather than when the
+subject is drawn. Two spellings of one site in one list raise `ValueError`, and so does
+`placement.placed_centres` when handed such a list. Because both lists are canonical,
+`apply_modifiers` recognises a site the rhythm already has: `WidespreadExcess("theta", 1.0,
+extra_sites=("f3",))` adds no patch and leaves theta unchanged (it used to add a second patch under
+F3). Canonical spellings are unchanged, so existing case ids do not move. Plant kinds register by `kind` (`register_plant`; a
 second class with the same kind raises); a spec's plants round-trip through JSON as `{kind, params}`,
 and an unknown kind raises naming the known ones.
 

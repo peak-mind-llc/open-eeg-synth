@@ -18,7 +18,7 @@ from open_eeg_synth.brain.network import NetworkWiring, wire_network
 from open_eeg_synth.brain.placement import placed_centres, region_centres
 from open_eeg_synth.brain.rhythm import RhythmSpec, draw_patch_params
 from open_eeg_synth.brain.state import StateTimeline
-from open_eeg_synth.channels import CHANNELS_19, canonical_label
+from open_eeg_synth.channels import CHANNELS_19, canonical_labels
 from open_eeg_synth.engine import Engine, Recording
 from open_eeg_synth.headmodel import HeadModel, head_model_channels, load_head_model
 from open_eeg_synth.seeds import stream_rng, stream_seed
@@ -110,12 +110,7 @@ class CaseSpec:
         # the full lead field, so this stays cheap even for a spec that is never rendered) — a
         # future head model with a different channel set must be consulted, not refused against a
         # hard-wired CHANNELS_19.
-        canon = tuple(
-            canonical_label(c, head_model_channels(self.head_model)) for c in self.channels
-        )
-        if len(set(canon)) != len(canon):
-            dupes = sorted({c for c in canon if canon.count(c) > 1})
-            raise ValueError(f"duplicate channels after alias canonicalisation: {dupes}")
+        canon = canonical_labels(self.channels, head_model_channels(self.head_model))
         object.__setattr__(self, "channels", canon)
         object.__setattr__(self, "plants", tuple(self.plants))
         object.__setattr__(self, "artifacts", tuple(self.artifacts))

@@ -3,10 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from open_eeg_synth.brain.placement import placed_centres
 from open_eeg_synth.brain.plants import (
     PLANTS,
     FocalSlow,
     LateralImbalance,
+    Modifier,
     PeakShift,
     ReducedRhythm,
     RhythmicBursts,
@@ -16,9 +18,19 @@ from open_eeg_synth.brain.plants import (
     plant_to_dict,
     register_plant,
 )
-from open_eeg_synth.case import compiled_rhythms, make_case, make_recording, make_subject
-from open_eeg_synth.channels import CHANNELS_19
+from open_eeg_synth.brain.rhythm import Rhythm, RhythmSpec, draw_patch_params
+from open_eeg_synth.brain.state import StateTimeline
+from open_eeg_synth.case import (
+    case_id_for,
+    compiled_rhythms,
+    make_case,
+    make_recording,
+    make_subject,
+)
+from open_eeg_synth.channels import CHANNELS_19, UnknownChannelError
+from open_eeg_synth.headmodel import load_head_model
 from open_eeg_synth.recipes import resting_brain, resting_case
+from open_eeg_synth.seeds import stream_rng, stream_seed
 from tests.helpers import band_power, welch
 
 FS = 256.0
@@ -282,3 +294,82 @@ def test_registry_rejects_duplicate_kind_and_names_unknown_kind():
     register_plant(FocalSlow)  # re-registering the real class is a no-op, not an error
     with pytest.raises(KeyError, match="not_a_real_plant"):
         plant_from_dict({"kind": "not_a_real_plant", "params": {}})
+
+
+def test_plant_and_rhythm_sites_are_canonical_on_construction():
+    """Sites are canonicalised against the head model's channel list (DESIGN §4.4), as a case's
+    channels are: another spelling of a site is the same plant, with the same case id, and a
+    site that two spellings name twice is refused."""
+    assert FocalSlow("f7") == FocalSlow("F7")
+    assert FocalSlow("f7").record().sites == ("F7",)
+    assert case_id_for(resting_case(5, plants=(FocalSlow("f7"),))) == case_id_for(
+        resting_case(5, plants=(FocalSlow("F7"),))
+    )
+    assert RhythmicBursts(("fz", "t7")).sites == ("Fz", "T3")
+    assert Modifier("theta", extra_sites=("pz",)).extra_sites == ("Pz",)
+    assert WidespreadExcess("theta", 1.0, extra_sites=("pz",)).extra_sites == ("Pz",)
+    assert RhythmSpec("x", 6.0, 1.0, sites=("cz",)).sites == ("Cz",)
+    for build in (
+        lambda: RhythmSpec("x", 6.0, 1.0, sites=("F3", "f3")),
+        lambda: RhythmicBursts(("Fz", "fz")),
+        lambda: WidespreadExcess("theta", 1.0, extra_sites=("Pz", "PZ")),
+        lambda: placed_centres(load_head_model(), ("F3", "f3"), np.random.default_rng(0)),
+    ):
+        with pytest.raises(ValueError, match="duplicate"):
+            build()
+    with pytest.raises(UnknownChannelError):
+        FocalSlow("X9")
+
+
+def test_canonical_site_inputs_keep_their_case_ids():
+    """Canonicalisation leaves canonical spellings alone, so existing case ids do not move
+    (the first value is the README's quick-start case)."""
+    assert case_id_for(resting_case(42, plants=[FocalSlow("F7")])) == "synth-6689f87b"
+    planted = (
+        FocalSlow("F7"),
+        RhythmicBursts(("Fz", "Cz"), amp_uv=25.0),
+        WidespreadExcess("theta", 2.0, extra_sites=("Pz",)),
+        LateralImbalance("alpha", "left", 0.5),
+    )
+    spec = resting_case(99, duration_s=30.0, drowsy_from_s=15.0, plants=planted, artifacts=())
+    assert case_id_for(spec) == case_id_for(
+        resting_case(
+            99,
+            duration_s=30.0,
+            drowsy_from_s=15.0,
+            plants=(
+                FocalSlow("f7"),
+                RhythmicBursts(("FZ", "cz"), amp_uv=25.0),
+                WidespreadExcess("theta", 2.0, extra_sites=("pz",)),
+                LateralImbalance("alpha", "left", 0.5),
+            ),
+            artifacts=(),
+        )
+    )
+
+
+def test_an_extra_site_already_present_under_another_spelling_adds_nothing():
+    """``extra_sites=("f3",)`` names theta's own F3: the compiled theta is the base theta, so its
+    patches, draws and amplitudes are unchanged (a fifth patch under F3 used to be added)."""
+    base = resting_case(5, duration_s=1.0, artifacts=())
+    planted = resting_case(
+        5,
+        duration_s=1.0,
+        artifacts=(),
+        plants=(WidespreadExcess("theta", 1.0, extra_sites=("f3",)),),
+    )
+    assert compiled_rhythms(planted) == compiled_rhythms(base)
+    head = load_head_model()
+
+    def theta(spec):
+        r = next(r for r in compiled_rhythms(spec) if r.name == "theta")
+        rng = stream_rng(5, "subject:rhythm:theta")
+        centres = placed_centres(head, r.sites, rng)
+        off, lag = draw_patch_params(r, len(centres), rng)
+        rhythm = Rhythm(
+            head, FS, r, StateTimeline.constant("eyes_closed"), centres, r.f0_hz,
+            stream_seed(5, "eyes_closed:rhythm:theta"), f0_offsets_hz=off, lags_ms=lag,
+        )  # fmt: skip
+        return rhythm.render(0, int(2 * FS))
+
+    assert np.array_equal(theta(planted), theta(base))

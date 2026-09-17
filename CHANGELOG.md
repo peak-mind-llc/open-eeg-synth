@@ -18,7 +18,9 @@ All notable changes to this project are documented here. The format follows
   rhythm generators (alpha, theta, beta, sensorimotor rhythm) in a resting recipe tuned against public
   EEG; planted patterns (`FocalSlow`, `RhythmicBursts`, `LateralImbalance`, `WidespreadExcess`,
   `PeakShift`, `ReducedRhythm`) with truth records; and a state timeline (eyes closed, eyes open,
-  drowsy) that drives rhythm gains and artifact rates.
+  drowsy) that drives rhythm gains and artifact rates. Plant and rhythm sites are canonicalised
+  against the head model's channel names (`FocalSlow("f7") == FocalSlow("F7")`), and a site named
+  twice raises.
 - An artifact plug-in framework (event and transform artifacts, a registry with entry-point
   discovery, empirical and analytic scalp patterns) and four plug-ins: blink, horizontal eye
   movement, jaw EMG and dead channel. Every event writes a truth record with its channels, times,

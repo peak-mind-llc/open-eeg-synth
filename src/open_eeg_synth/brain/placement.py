@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from open_eeg_synth.channels import MIDLINE, MIRROR, canonical_label
+from open_eeg_synth.channels import MIDLINE, MIRROR, canonical_labels
 from open_eeg_synth.headmodel import HeadModel
 
 REGIONS = {"posterior": {"y_pct_max": 12.0, "z_pct_min": 30.0}}
@@ -15,8 +15,9 @@ REGIONS = {"posterior": {"y_pct_max": 12.0, "z_pct_min": 30.0}}
 def placed_centres(
     head: HeadModel, sites: Sequence[str], rng: np.random.Generator, n_near: int = 25
 ) -> list[int]:
-    """One source under each site; a mirror pair gets mirror-image sources."""
-    names = [canonical_label(s, head.channels) for s in sites]
+    """One source under each site; a mirror pair gets mirror-image sources. Two sites that name
+    one channel raise ``ValueError``: they would share one source and count it twice."""
+    names = list(canonical_labels(sites, head.channels, what="sites"))
     centres: dict[str, int] = {}
     for ch in names:
         if ch in centres:

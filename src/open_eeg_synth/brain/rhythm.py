@@ -10,9 +10,9 @@ import numpy as np
 
 from open_eeg_synth._canon import canonical_fields
 from open_eeg_synth.brain.state import StateTimeline
-from open_eeg_synth.channels import MIRROR
+from open_eeg_synth.channels import MIRROR, canonical_labels
 from open_eeg_synth.dsp import OU
-from open_eeg_synth.headmodel import HeadModel
+from open_eeg_synth.headmodel import HeadModel, all_head_model_channels
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,11 @@ class RhythmSpec:
 
     def __post_init__(self) -> None:
         canonical_fields(self)
+        # canonical site names (DESIGN §4.4), so "f3" and "F3" are one site and one spec
+        sites = canonical_labels(
+            self.sites, all_head_model_channels(), what=f"sites in RhythmSpec {self.name!r}"
+        )
+        object.__setattr__(self, "sites", sites)
         if bool(self.sites) == bool(self.region):
             raise ValueError(
                 f"RhythmSpec {self.name!r} needs exactly one of sites or region; got "

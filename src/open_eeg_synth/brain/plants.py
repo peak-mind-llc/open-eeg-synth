@@ -12,6 +12,8 @@ from typing import Any, ClassVar, Protocol
 
 from open_eeg_synth._canon import canonical_fields, json_plain
 from open_eeg_synth.brain.rhythm import BurstGate, RhythmSpec
+from open_eeg_synth.channels import canonical_label, canonical_labels
+from open_eeg_synth.headmodel import all_head_model_channels
 
 
 def _validate_finite_fields(obj: Any) -> None:
@@ -31,6 +33,15 @@ def _validate_positive_f0(obj: Any) -> None:
 def _validate_nonneg_factor(obj: Any) -> None:
     if obj.factor < 0:
         raise ValueError(f"{type(obj).__name__}.factor must be >= 0; got {obj.factor!r}")
+
+
+def _canonical_sites(obj: Any, name: str) -> None:
+    """Canonicalise the site-tuple field ``name`` of ``obj`` against the head models' channel
+    names (DESIGN §4.4); two spellings of one site raise."""
+    sites = canonical_labels(
+        getattr(obj, name), all_head_model_channels(), what=f"{type(obj).__name__}.{name}"
+    )
+    object.__setattr__(obj, name, sites)
 
 
 def _confinement_note(state_gain: dict[str, float]) -> str:
@@ -76,6 +87,7 @@ class Modifier:
     def __post_init__(self) -> None:
         canonical_fields(self)
         _validate_finite_fields(self)
+        _canonical_sites(self, "extra_sites")
 
 
 def apply_modifiers(
@@ -95,10 +107,9 @@ def apply_modifiers(
         hg = dict(r.hemisphere_gain)
         for side, g in m.hemisphere_gain.items():
             hg[side] = hg.get(side, 1.0) * g
-        # Deferred: when two modifiers both add extra_sites to the same rhythm, the resulting
-        # site order (and so a downstream consumer reading sites[0], say) depends on which
-        # modifier is processed first — order dependence, not a correctness bug (every requested
-        # site still ends up present exactly once); not fixed here.
+        # Both site lists are canonical (Modifier and RhythmSpec canonicalise on construction), so
+        # a site the rhythm already has is recognised whatever its spelling was. When two
+        # modifiers add sites to one rhythm, the site order follows the plant order (§4.4).
         out[m.rhythm] = replace(
             r,
             amp_uv=r.amp_uv * m.amp_scale,
@@ -164,6 +175,7 @@ class FocalSlow:
         canonical_fields(self)
         _validate_finite_fields(self)
         _validate_positive_f0(self)
+        object.__setattr__(self, "site", canonical_label(self.site, all_head_model_channels()))
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         # the frequency rides in the compiled name so two FocalSlow plants at the same site
@@ -222,6 +234,7 @@ class RhythmicBursts:
         canonical_fields(self)
         _validate_finite_fields(self)
         _validate_positive_f0(self)
+        _canonical_sites(self, "sites")
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         # the frequency rides in the compiled name too (as FocalSlow's does), so two
@@ -310,6 +323,7 @@ class WidespreadExcess:
         canonical_fields(self)
         _validate_finite_fields(self)
         _validate_nonneg_factor(self)
+        _canonical_sites(self, "extra_sites")
 
     def rhythms(self) -> tuple[RhythmSpec, ...]:
         return ()

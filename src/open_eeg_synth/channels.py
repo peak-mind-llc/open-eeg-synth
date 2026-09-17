@@ -57,3 +57,15 @@ def canonical_label(label: str, known: Sequence[str] = CHANNELS_19) -> str:
     if key in lookup:
         return lookup[key]
     raise UnknownChannelError(f"unknown channel {label!r}; known: {', '.join(known)}")
+
+
+def canonical_labels(
+    labels: Sequence[str], known: Sequence[str] = CHANNELS_19, *, what: str = "channels"
+) -> tuple[str, ...]:
+    """``labels`` canonicalised against ``known``; two labels naming one channel raise
+    ``ValueError`` (``("T3", "t7")`` must not silently become ``("T3", "T3")``)."""
+    canon = tuple(canonical_label(lb, known) for lb in labels)
+    dupes = sorted({c for c in canon if canon.count(c) > 1})
+    if dupes:
+        raise ValueError(f"duplicate {what} after alias canonicalisation: {dupes}")
+    return canon
