@@ -350,6 +350,21 @@ def test_empirical_fallback_with_no_channel_in_file_is_the_analytic_dipole(fake_
     assert out[0] < 0.0 and out[1] < 0.0 and abs(out[1]) < abs(out[0]) < 1.0
 
 
+def test_empirical_fallback_uses_every_anchor_when_all_disagree_in_sign(real_eog):
+    """On the real blink map F7, T3 and T4 are positive where the dipole model is negative. With
+    only those three present, the sign filter has nothing to keep, so the fit uses all three."""
+    head = load_head_model()
+    pos = dict(zip(CHANNELS_19, head.electrode_pos, strict=True))
+    a1 = _EXTRA_POS[0]
+    p = np.array([pos["F7"], pos["T3"], pos["T4"], a1])
+    v = patterns.empirical("blink", ["F7", "T3", "T4", "A1"], electrode_pos=p, z=0.0)
+    envelope, cosine = patterns._dipole_terms(*patterns._FALLBACK["blink"], p)
+    assert np.all(np.sign(v[:3]) != np.sign(cosine[:3]))
+    dist = np.linalg.norm(p[:3] - a1, axis=1)
+    scale = patterns._fallback_scale(v[:3], envelope[:3], cosine[:3], dist, ["F7", "T3", "T4"])
+    assert np.isfinite(v[3]) and np.isclose(v[3], scale * envelope[3] * cosine[3])
+
+
 def test_empirical_real_file_blink_peaks_frontal_heog_opposite_f7_f8(real_eog):
     """Exercises the real Task-15 data file: no monkeypatching, no fake fixture."""
     blink = patterns.empirical("blink", CHANNELS_19, z=0.0)
