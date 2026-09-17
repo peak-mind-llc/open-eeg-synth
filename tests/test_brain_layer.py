@@ -75,16 +75,19 @@ def test_brain_layer_chunk_invariance_and_eyes_closed_alpha():
 
 
 # Calibrated medians of this test's own measurement (brain layer only, nominal head, eyes closed,
-# average reference, 60 s, the 9 seeds below) for the recipe calibrated in Task 12
-# (recipes.py): O1 alpha share 0.567 (range 0.22-0.76), Cz 1-45 Hz RMS 11.9 uV (11.1-13.9).
+# average reference, 60 s, the 9 seeds below) for the recipe calibrated in Task 12 and re-tuned
+# against the realism reference in Task 32 (recipes.py): O1 alpha share 0.571 (range 0.28-0.75),
+# Cz 1-45 Hz RMS 11.8 uV (10.2-14.7). (Task 12's recipe read 0.567 (0.22-0.76) and 11.9 uV
+# (11.1-13.9).)
 #
 # These pins belong to this fixed seed set, which reads low: the population medians of the same
-# measurement over 270 seeds (0-269) are O1 share 0.63 and Cz 12.8 uV. Four of the nine subjects
-# (seeds 2, 3, 100, 101: shares 0.22-0.43) drew alpha patches that project weakly onto O1, which
-# is where the population's lower tail comes from. Thirty disjoint 9-seed sets from those 270
-# have medians from 0.46 to 0.83, so a different seed set needs its own pinned value.
-CAL_O1_ALPHA_SHARE = 0.567
-CAL_CZ_RMS_1_45_UV = 11.9
+# measurement over 270 seeds (0-269) are O1 share 0.64 and Cz 12.7 uV (Task 12: 0.63, 12.8). Four
+# of the nine subjects (seeds 2, 3, 100, 101: shares 0.28-0.37) drew alpha patches that project
+# weakly onto O1, which is where the population's lower tail comes from. Thirty disjoint 9-seed
+# sets from those 270 have medians from 0.44 to 0.81, so a different seed set needs its own pinned
+# value.
+CAL_O1_ALPHA_SHARE = 0.571
+CAL_CZ_RMS_1_45_UV = 11.8
 
 
 def test_calibrated_amplitudes_median_across_seeds():
