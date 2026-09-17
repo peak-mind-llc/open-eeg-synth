@@ -24,7 +24,8 @@ class EyeMovement(EventArtifact):
         saccade_uv: tuple[float, float] = (30.0, 100.0),
         roving_uv: tuple[float, float] = (20.0, 60.0),
     ) -> None:
-        super().__init__(rate_by_state=rate_by_state or dict(DEFAULT_RATES), min_gap_s=min_gap_s)
+        rates = dict(DEFAULT_RATES) if rate_by_state is None else rate_by_state  # {} = never
+        super().__init__(rate_by_state=rates, min_gap_s=min_gap_s)
         self.saccade_uv, self.roving_uv = tuple(saccade_uv), tuple(roving_uv)
 
     def bind(self, ctx: RenderContext) -> None:
@@ -38,7 +39,10 @@ class EyeMovement(EventArtifact):
 
     def make_event(self, onset: int) -> Event:
         rng, fs = self.ctx.rng, self.fs
-        sign = 1.0 if rng.random() < 0.5 else -1.0
+        # The heog map is positive at F8 and negative at F7, so sign > 0 (F8 positive) is gaze to
+        # the right and sign < 0 gaze to the left.
+        sign = 1 if rng.random() < 0.5 else -1
+        gaze = {"sign": sign, "direction": "right" if sign > 0 else "left"}
         if self.ctx.timeline.state_at(onset / fs) == "eyes_open":
             subtype = "saccade"
             hold = float(rng.uniform(0.3, 2.0))
@@ -54,7 +58,7 @@ class EyeMovement(EventArtifact):
                 )
                 * amp
             )
-            params = {"hold_s": round(hold, 3)}
+            params = {**gaze, "hold_s": round(hold, 3)}
         else:
             subtype = "slow_roving"
             f = float(rng.uniform(0.2, 0.5))
@@ -63,7 +67,7 @@ class EyeMovement(EventArtifact):
             n = int(round(cycles / f * fs))
             t = np.arange(n) / fs
             w = amp * np.sin(2 * np.pi * f * t) * raised_cosine_envelope(n, fs, 0.2, 0.2)
-            params = {"freq_hz": round(f, 3), "cycles": cycles}
+            params = {**gaze, "freq_hz": round(f, 3), "cycles": cycles}
         truth = TruthRecord(
             "eye_movement",
             subtype,

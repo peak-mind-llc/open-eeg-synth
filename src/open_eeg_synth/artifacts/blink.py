@@ -26,15 +26,20 @@ class Blink(EventArtifact):
         peak_range_uv: tuple[float, float] = (60.0, 250.0),
         double_p: float = 0.15,
     ) -> None:
-        super().__init__(rate_by_state=rate_by_state or dict(DEFAULT_RATES), min_gap_s=min_gap_s)
+        rates = dict(DEFAULT_RATES) if rate_by_state is None else rate_by_state  # {} = never
+        super().__init__(rate_by_state=rates, min_gap_s=min_gap_s)
         self.median_uv, self.sigma = float(median_uv), float(sigma)
         self.peak_range_uv, self.double_p = tuple(peak_range_uv), float(double_p)
 
     def bind(self, ctx: RenderContext) -> None:
         super().bind(ctx)
+        # T9/T10-referenced map on the full head's scale (P28, P30): the drawn peak is the value
+        # at the full head's loudest channel (Fp1/Fp2), whichever channels this case records.
         self.pattern = patterns.empirical(
             "blink", ctx.channels, rng=ctx.subject_rng, electrode_pos=ctx.electrode_pos
         )
+        # truth channels: |pattern| >= 0.3 of the full-head maximum (typically Fp1, Fp2, F7, F8,
+        # F3, F4 on the 10-20 set)
         self.channels = tuple(
             ch for ch, p in zip(ctx.channels, self.pattern, strict=True) if abs(p) >= 0.3
         )

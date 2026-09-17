@@ -273,7 +273,15 @@ class EventArtifact(_ParamsMixin, ABC):
                 old_occupancy.remove_exclusive(self)
 
     @abstractmethod
-    def make_event(self, onset: int) -> Event: ...
+    def make_event(self, onset: int) -> Event:
+        """Draw one event starting at sample `onset` (DESIGN §5.2).
+
+        The returned Event's `onset` must equal the `onset` given: nothing may start before it,
+        and a delayed start is made with leading zeros in the block, not by moving the Event.
+        The scheduler checks this on every build, including the rebuild after an exclusive push
+        to a later onset, and raises ValueError (naming the plug-in's kind) otherwise. Draw
+        everything from `self.ctx.rng`, in a fixed order, so that a rebuild is reproducible.
+        """
 
     def _peek_onset(self, until: int) -> int | None:
         """Ensure the next scheduling candidate is drawn; return its onset sample if < until."""

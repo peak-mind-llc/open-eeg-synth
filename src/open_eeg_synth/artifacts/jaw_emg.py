@@ -8,22 +8,18 @@ from open_eeg_synth.artifacts import patterns
 from open_eeg_synth.artifacts.base import Event, EventArtifact, Remedy, RenderContext, TruthRecord
 from open_eeg_synth.artifacts.registry import register
 from open_eeg_synth.dsp import lowpass_decimate, raised_cosine_envelope
+from open_eeg_synth.headmodel import load_head_model
 
 DEFAULT_RATES = {"eyes_open": 1 / 60, "eyes_closed": 1 / 60, "drowsy": 1 / 120}
-# Temporalis centre and sigma (Task 18 / P ruling): the brief's naive anatomical offset (5 mm
-# lateral, 10 mm anterior, 10 mm inferior of T3/T4) with sigma_mm=35 undershoots DESIGN §5.6's
-# target topography (measured: F7~=0.62, T5~=0.12, C3~=0.05 there vs. the design's ~0.6/~0.5/~0.3).
-# Retuned by least-squares search against those three targets (T3/T4 == 1.0 is automatic — the
-# centre stays closest to T3/T4 than to any other electrode): centred 4 mm posterior and 7.5 mm
-# inferior of T3 / T4 (no lateral offset), sigma_mm = 54.0. Resulting values on CHANNELS_19 (max
-# |error| against DESIGN's ~1.0/~0.6/~0.5/~0.3 is 0.067, comfortably inside the +/-0.15 the task
-# allows) — left pattern centred on LEFT_CENTRE: T3=1.000, F7=0.667, T5=0.563, C3=0.291, next
-# loudest F3=0.252 (T4=0.008); right pattern centred on RIGHT_CENTRE: T4=1.000, F8=0.544,
-# T6=0.542, C4=0.366, next loudest P4=0.243 (T3=0.008). The head model is not perfectly
-# left/right symmetric, so the two sides' errors differ slightly but both stay well inside
-# tolerance.
-LEFT_CENTRE = np.array([-0.0825, -0.0169, -0.0129])
-RIGHT_CENTRE = np.array([0.0850, -0.0221, -0.0100])
+# Temporalis placement (fix round 1 ruling): centred 5 mm lateral, 5 mm anterior and 7.5 mm
+# inferior of T3 (left) / T4 (right) on the template head (head frame: +x right, +y anterior,
+# +z up), sigma 50 mm. Relative to T3 / T4, the raw Gaussian (P30) then reads T3 1.00, F7 0.72,
+# T5 0.40, C3 0.21 on the left and T4 1.00, F8 0.59, T6 0.38, C4 0.29 on the right; the
+# opposite temporal channel is 0.003. Template T3 = (-0.0824765, -0.0129234, -0.0053889) and
+# T4 = (0.0850215, -0.0180840, -0.0024852).
+LEFT_CENTRE = np.array([-0.0874765, -0.0079234, -0.0128889])
+RIGHT_CENTRE = np.array([0.0900215, -0.0130840, -0.0099852])
+_CENTRES = {"left": LEFT_CENTRE, "right": RIGHT_CENTRE}
 
 
 @register
@@ -44,11 +40,12 @@ class JawEmg(EventArtifact):
         dur_median_s: float = 1.2,
         dur_sigma: float = 0.5,
         dur_range_s: tuple[float, float] = (0.5, 3.0),
-        sigma_mm: float = 54.0,
+        sigma_mm: float = 50.0,
     ) -> None:
         if side not in ("left", "right", "both", "random"):
             raise ValueError("side must be left, right, both or random")
-        super().__init__(rate_by_state=rate_by_state or dict(DEFAULT_RATES), min_gap_s=min_gap_s)
+        rates = dict(DEFAULT_RATES) if rate_by_state is None else rate_by_state  # {} = never
+        super().__init__(rate_by_state=rates, min_gap_s=min_gap_s)
         self.side, self.oversample, self.peak_hz = side, int(oversample), float(peak_hz)
         self.rms_median_uv, self.rms_sigma = float(rms_median_uv), float(rms_sigma)
         self.rms_range_uv, self.dur_median_s = tuple(rms_range_uv), float(dur_median_s)
@@ -57,11 +54,16 @@ class JawEmg(EventArtifact):
 
     def bind(self, ctx: RenderContext) -> None:
         super().bind(ctx)
-        pos = ctx.electrode_pos
-        self.pattern = {
-            "left": patterns.analytic_focal(LEFT_CENTRE, pos, self.sigma_mm),
-            "right": patterns.analytic_focal(RIGHT_CENTRE, pos, self.sigma_mm),
-        }
+        # Each side's map is 1.0 at its loudest channel on the full template head (T3 / T4), so
+        # the drawn plateau RMS is the RMS there, and a recording without T3 / T4 keeps its
+        # channels at their full-head size instead of being stretched to 1 (P30).
+        template = load_head_model().electrode_pos
+        self.pattern, self._full_pattern = {}, {}
+        for side, centre in _CENTRES.items():
+            full = patterns.analytic_focal(centre, template, self.sigma_mm)
+            self.pattern[side] = patterns.analytic_focal(centre, ctx.electrode_pos, self.sigma_mm)
+            self.pattern[side] /= full.max()
+            self._full_pattern[side] = full / full.max()
 
     @staticmethod
     def burst(
@@ -90,11 +92,12 @@ class JawEmg(EventArtifact):
             np.clip(rng.lognormal(np.log(self.rms_median_uv), self.rms_sigma), *self.rms_range_uv)
         )
         sides = ("left", "right") if side == "both" else (side,)
-        block = None
+        block = full = None  # full: the same event on the template head, for the truth's peak
         for s in sides:
             w = rms * self.burst(fs, dur, rng, self.oversample, self.peak_hz)
-            part = np.outer(self.pattern[s], w)
+            part, full_part = np.outer(self.pattern[s], w), np.outer(self._full_pattern[s], w)
             block = part if block is None else block + part
+            full = full_part if full is None else full + full_part
         combined = np.max([self.pattern[s] for s in sides], axis=0)
         channels = tuple(ch for ch, p in zip(self.ctx.channels, combined, strict=True) if p >= 0.3)
         truth = TruthRecord(
@@ -104,7 +107,7 @@ class JawEmg(EventArtifact):
             channels,
             onset / fs,
             (onset + block.shape[1]) / fs,
-            float(np.abs(block).max()),
+            float(np.abs(full).max()),  # the full-head peak, whatever is recorded (P30)
             (Remedy.MASK_SEGMENT, Remedy.REMOVE_COMPONENT),
             self.layer_name,
             {"duration_s": round(dur, 3), "rms_uv": round(rms, 1)},
