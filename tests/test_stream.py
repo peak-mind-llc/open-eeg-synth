@@ -7,8 +7,7 @@ import numpy as np
 import pytest
 
 from open_eeg_synth.brain.state import StateTimeline
-from open_eeg_synth.case import CaseSpec, ConditionSpec
-from open_eeg_synth.channels import UnknownChannelError
+from open_eeg_synth.case import CaseSpec, ConditionSpec, SensorSpec
 from open_eeg_synth.markers import MarkerSchedule
 from open_eeg_synth.stream import StreamSource
 from tests.helpers import band_power
@@ -68,8 +67,6 @@ def test_validation():
         StreamSource([], 256.0)
     with pytest.raises(ValueError):
         StreamSource(["O1"], 0.0)
-    with pytest.raises(UnknownChannelError):
-        StreamSource(["O1", "XYZ"], 256.0)
     s = StreamSource(["O1"], 256.0, seed=1)
     with pytest.raises(ValueError):
         s.next_chunk(0)
@@ -96,6 +93,44 @@ def test_duplicate_eeg_labels_are_rejected_but_heart_labels_may_repeat():
     chunk = src.next_chunk(32)
     assert chunk.shape == (4, 32)
     assert np.array_equal(chunk[2], chunk[3])  # both HR rows carry the same ECG
+
+
+def test_labels_the_head_model_lacks_carry_sensor_noise_only():
+    """A label that is neither a heart label nor a head-model channel (10-10 sites, ear
+    references, anything else) is an unmodelled row with sensor noise only, as the classic
+    synthesizer accepts any label (DESIGN §7.3). The modelled rows do not change: the Fp1 row
+    equals a ["Fp1", "HR"] source's with the same seed. A label spelled as a head-model channel is
+    still modelled, and two labels naming one modelled channel still raise."""
+    labels = ["Fp1", "Fpz", "Oz", "A1", "X1", "HR", "ECG"]
+    with pytest.warns(UserWarning, match="Fpz, Oz, A1, X1") as caught:
+        src = StreamSource(labels, 256.0, seed=11, sensor=SensorSpec(white_uv=4.0))
+    assert len([w for w in caught if "unmodelled" in str(w.message)]) == 1
+    assert src.unmodelled_labels == ("Fpz", "Oz", "A1", "X1")
+    ref = StreamSource(["Fp1", "HR"], 256.0, seed=11, sensor=SensorSpec(white_uv=4.0))
+    assert ref.unmodelled_labels == ()
+    x = np.concatenate([src.next_chunk(512) for _ in range(8)], axis=1)
+    y = np.concatenate([ref.next_chunk(512) for _ in range(8)], axis=1)
+    assert x.dtype == np.float32 and np.isfinite(x).all()
+    assert np.array_equal(x[0], y[0])
+    assert np.array_equal(x[5], y[1]) and np.array_equal(x[6], y[1])
+    noise = x[1:5].astype(float)
+    assert np.allclose(noise.std(axis=1), 4.0, rtol=0.06)
+    assert np.abs(np.corrcoef(noise)[np.triu_indices(4, 1)]).max() < 0.1
+
+    rng = np.random.default_rng(20260917)
+    with pytest.warns(UserWarning, match="unmodelled"):
+        again = StreamSource(labels, 256.0, seed=11, sensor=SensorSpec(white_uv=4.0))
+    parts, t = [], 0
+    while t < x.shape[1]:
+        n = min(int(rng.integers(1, 700)), x.shape[1] - t)
+        parts.append(again.next_chunk(n))
+        t += n
+    assert np.allclose(np.concatenate(parts, axis=1), x, atol=1e-4)
+
+    with pytest.warns(UserWarning, match="unmodelled"):
+        StreamSource(["X1"], 256.0, seed=1)  # nothing modelled at all still streams
+    with pytest.raises(ValueError, match="duplicate"):
+        StreamSource(["O1", "o1", "X1"], 256.0, seed=1)
 
 
 def test_chunk_shape_dtype_scale_and_determinism():

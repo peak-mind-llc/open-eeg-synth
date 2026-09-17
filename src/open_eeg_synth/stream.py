@@ -13,6 +13,10 @@ every channel shares (DESIGN §2.3); a live view that re-references (average or 
 the gradient, a raw referential view shows alpha on every channel, as a real referential amplifier
 does.
 
+A label the head model lacks (a 10-10 site such as Fpz or Oz, an ear reference, anything else that
+is not a heart label) does not raise, as it does not in ``classic``: it becomes an unmodelled row
+that carries sensor noise only, and the source warns once, naming those labels (DESIGN §7.3).
+
 ``.truth`` grows for as long as the stream runs — it is every event scheduled so far, and nothing
 here caches or discards it. A recording application that streams for hours should read ``.truth``
 incrementally (e.g. record the length already consumed) rather than re-copy the whole list on every
@@ -22,6 +26,7 @@ chunk.
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Sequence
 
 import numpy as np
@@ -37,11 +42,13 @@ from open_eeg_synth.case import (
     make_engine,
     make_subject,
 )
-from open_eeg_synth.channels import canonical_label, is_heart_label
+from open_eeg_synth.channels import UnknownChannelError, canonical_label, is_heart_label
+from open_eeg_synth.headmodel import head_model_channels
 from open_eeg_synth.heart import HeartSource
 from open_eeg_synth.markers import MarkerSchedule
 from open_eeg_synth.recipes import ordinary_artifacts, resting_brain
 from open_eeg_synth.seeds import fresh_case_seed, stream_rng, stream_seed
+from open_eeg_synth.sensor import SensorNoise
 
 
 class StreamSource:
@@ -55,7 +62,11 @@ class StreamSource:
     ``.seed`` are read at any time.
 
     ``channel_labels`` must not repeat an EEG electrode (CaseSpec rejects duplicate channels
-    after alias canonicalisation); heart-rate labels are the exception and may repeat freely.
+    after alias canonicalisation); heart-rate labels are the exception and may repeat freely. A
+    label that is neither a heart label nor a head-model channel is an unmodelled row: it carries
+    sensor noise only, drawn from its own ``stream:unmodelled`` stream so the modelled rows are the
+    same as without it, and is listed in :attr:`unmodelled_labels` (it may repeat; each row gets its
+    own noise).
     """
 
     def __init__(
@@ -78,25 +89,55 @@ class StreamSource:
         self.labels = list(channel_labels)
         self.srate = float(srate)
         self._seed = fresh_case_seed() if seed is None else int(seed)
-        self._eeg_rows = [i for i, lb in enumerate(self.labels) if not is_heart_label(lb)]
-        self._hr_rows = [i for i, lb in enumerate(self.labels) if is_heart_label(lb)]
-        eeg_labels = tuple(canonical_label(self.labels[i]) for i in self._eeg_rows)
+        # CaseSpec's default head model: its channels are the ones the engine can project
+        known = head_model_channels()
+        self._eeg_rows: list[int] = []
+        self._hr_rows: list[int] = []
+        self._unmodelled_rows: list[int] = []
+        eeg_labels: list[str] = []
+        for i, lb in enumerate(self.labels):
+            if is_heart_label(lb):
+                self._hr_rows.append(i)
+                continue
+            try:
+                eeg_labels.append(canonical_label(lb, known))
+            except UnknownChannelError:
+                self._unmodelled_rows.append(i)
+            else:
+                self._eeg_rows.append(i)
+        self._unmodelled_labels = tuple(self.labels[i] for i in self._unmodelled_rows)
         self.timeline = timeline or StateTimeline.constant("eyes_open")
         self.spec = CaseSpec(
             seed=self._seed,
             fs=self.srate,
-            channels=eeg_labels,
+            channels=tuple(eeg_labels),
             perturb_head=perturb_head,
             brain=brain or resting_brain(),
             artifacts=tuple(artifacts) if artifacts is not None else ordinary_artifacts(),
             sensor=sensor or SensorSpec(),
             conditions=(ConditionSpec("stream", math.inf, self.timeline),),
         )
+        # warned only once the spec is valid (a duplicate modelled label raises first)
+        if self._unmodelled_labels:
+            warnings.warn(
+                f"StreamSource: {', '.join(self._unmodelled_labels)} not in the head model; "
+                "these unmodelled rows carry sensor noise only",
+                stacklevel=2,
+            )
         self.subject = make_subject(self.spec)
         self.engine = make_engine(self.spec, self.subject, self.spec.conditions[0])
         self.heart = (
             HeartSource(self.srate, stream_seed(self._seed, "stream:heart"))
             if self._hr_rows
+            else None
+        )
+        self.unmodelled = (
+            SensorNoise(
+                len(self._unmodelled_rows),
+                self.spec.sensor.white_uv,
+                stream_seed(self._seed, "stream:unmodelled"),
+            )
+            if self._unmodelled_rows
             else None
         )
         self.markers = markers or MarkerSchedule()
@@ -110,6 +151,12 @@ class StreamSource:
         return self._seed
 
     @property
+    def unmodelled_labels(self) -> tuple[str, ...]:
+        """The labels, as given, that are neither heart labels nor head-model channels; their
+        rows carry sensor noise only."""
+        return self._unmodelled_labels
+
+    @property
     def truth(self) -> list[TruthRecord]:
         return self.engine.truth()
 
@@ -119,6 +166,8 @@ class StreamSource:
         frame = self.engine.render(self._pos, n_samples)
         out = np.zeros((len(self.labels), n_samples), dtype=np.float32)
         out[self._eeg_rows] = frame.mixed
+        if self.unmodelled is not None:
+            out[self._unmodelled_rows] = self.unmodelled.render(self._pos, n_samples)
         if self.heart is not None:
             ecg = self.heart.render(self._pos, n_samples)
             for i in self._hr_rows:

@@ -1272,6 +1272,8 @@ class StreamSource:
     def truth(self) -> list[TruthRecord]                           # every event scheduled so far
     @property
     def seed(self) -> int
+    @property
+    def unmodelled_labels(self) -> tuple[str, ...]                 # labels with sensor noise only
 ```
 
 The constructor signature mirrors `classic.RealisticEEGSynthesizer(channel_labels, srate, *, seed,
@@ -1279,10 +1281,17 @@ markers)` so a recording application swaps one import. Labels are split into hea
 `ECG`, `EKG`, in any letter case) and EEG labels. Every heart row carries the same `HeartSource` ECG,
 seeded from `stream:heart`: an R-wave of about 200 µV and RR intervals around a mean of 72 bpm with a
 2 bpm spread (the classic constants), plus respiratory sinus arrhythmia of ±40 ms at 5.5 breaths a
-minute and a 2 % wave at 0.1 Hz. Heart labels may repeat. EEG labels are canonicalised against
-`CHANNELS_19`: an unknown label raises `UnknownChannelError`, and two labels that collapse to one
-channel raise `ValueError`, as they do in a `CaseSpec`. The label list must not be empty, and `srate`
-must be finite and positive (a NaN or infinite rate used to fail deep inside the network wiring).
+minute and a 2 % wave at 0.1 Hz. Heart labels may repeat. Every other label is canonicalised against the
+head model's channels (`head_model_channels()`, the 19 of the 10-20 system), and two labels that
+collapse to one channel raise `ValueError`, as they do in a `CaseSpec`. A label the head model lacks
+does not raise, as it does not in `classic`: 10-10 sites such as `Fpz` and `Oz` are not projected in
+0.2.0, and neither are ear references such as `A1` or any other name. Each such label becomes an
+unmodelled row that carries sensor noise only (white noise at `sensor.white_uv`, drawn time-major
+from its own stream `stream:unmodelled`, so the modelled rows are exactly those of a source built
+without it); the source warns once at construction naming those labels and lists them, as given, in
+`unmodelled_labels`. Unmodelled labels may repeat, and each such row gets its own noise. The label
+list must not be empty, and `srate` must be finite and positive (a NaN or infinite rate used to fail
+deep inside the network wiring).
 
 Internally the source is one `CaseSpec` with a single condition named `"stream"` of unbounded duration
 (`duration_s = inf`, serialised as null), with the resting brain, the ordinary artifacts and the
@@ -1424,6 +1433,7 @@ truth itself as JSON. Requires the `edf` extra.
 | `<condition>:artifact:<kind>:<i>` | scheduling, event waveforms and a transform's noise; `i` counts instances of that kind only |
 | `<condition>:sensor` | sensor noise |
 | `stream:heart`, `stream:markers` | a `StreamSource`'s ECG (RR intervals and waveform noise) and oddball markers |
+| `stream:unmodelled` | a `StreamSource`'s sensor noise on labels the head model lacks (§7.3) |
 
 A `StreamSource`'s single condition is named `stream`, so its time streams read `stream:background`
 and so on. Adding a rhythm, a plant or an artifact of another kind therefore never changes the draws

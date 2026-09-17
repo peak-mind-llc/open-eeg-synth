@@ -31,7 +31,9 @@ All notable changes to this project are documented here. The format follows
   the same from the command line.
 - `StreamSource`: chunked, seamless output for a recording application's mock amplifiers, with the
   classic synthesizer's constructor, an ECG on heart-rate labels, event markers and the artifact truth
-  so far.
+  so far. Like the classic synthesizer, it accepts labels outside the head model; in 0.2.0 those rows
+  (10-10 sites such as Fpz and Oz, ear references, anything else) carry sensor noise only, the
+  source warns once, and `StreamSource.unmodelled_labels` lists them.
 - A realism suite (`pytest -m realism`) that compares the resting recipe with committed percentiles
   from PhysioNet recordings measured the same way, with two named known gaps.
 - `SIGNAL_VERSION` and a signal fingerprint test; both version numbers are written into every truth

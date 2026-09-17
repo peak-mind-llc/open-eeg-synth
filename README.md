@@ -89,7 +89,10 @@ chunk = source.next_chunk(32)  # float32 microvolts, shape (7, 32); the HR row c
 ```
 
 Chunks join without seams, and the samples do not depend on the chunk size. Building a source takes
-about half a second; each 32-sample chunk then takes about half a millisecond. `source.truth` lists
+about half a second; each 32-sample chunk then takes about half a millisecond. Heart-rate labels
+(`HR`, `ECG`, `EKG`) carry the ECG. A label outside the 19 channels of the 10-20 system, such as a
+10-10 site (`Fpz`, `Oz`) or an ear reference (`A1`), is accepted but not modelled in 0.2.0: its row
+carries sensor noise only, the source warns once, and `source.unmodelled_labels` lists those labels. `source.truth` lists
 the artifact events so far, and `source.due_markers(n)` returns event markers in step with the
 chunks.
 
