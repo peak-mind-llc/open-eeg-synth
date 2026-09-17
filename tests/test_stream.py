@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import time
 
@@ -73,6 +75,12 @@ def test_validation():
         s.next_chunk(0)
 
 
+def test_validation_rejects_non_finite_srate():
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError):
+            StreamSource(["O1"], bad, seed=1)
+
+
 def test_chunk_shape_dtype_scale_and_determinism():
     a = StreamSource(Q21, 256.0, seed=7)
     b = StreamSource(Q21, 256.0, seed=7)
@@ -81,15 +89,39 @@ def test_chunk_shape_dtype_scale_and_determinism():
     assert np.allclose(c, b.next_chunk(32)) and np.allclose(a.next_chunk(32), b.next_chunk(32))
     x = np.concatenate([a.next_chunk(256) for _ in range(8)], axis=1)
     assert 5.0 < x[8].std() < 300.0
-    assert StreamSource(Q21, 256.0).seed != StreamSource(Q21, 256.0).seed  # fresh seeds
+
+
+@pytest.fixture(scope="module")
+def fresh_q21_pair():
+    """Two independently seed=None-drawn Q21 @ 256 Hz sources, built once for the whole module
+    and never advanced (no next_chunk/due_markers calls): construction (~0.5 s - head
+    perturbation plus mixing-matrix smoothing) dominates this file's runtime, so the one check
+    that only needs to read `.seed` off a pair of fresh instances shares them instead of paying
+    for its own pair."""
+    return StreamSource(Q21, 256.0), StreamSource(Q21, 256.0)
+
+
+def test_fresh_seeds_are_unique(fresh_q21_pair):
+    a, b = fresh_q21_pair
+    assert a.seed != b.seed
 
 
 def test_chunk_size_does_not_change_the_signal():
-    a = StreamSource(DRAGON, 500.0, seed=3)
-    b = StreamSource(DRAGON, 500.0, seed=3)
-    x = a.next_chunk(1000)
-    y = np.concatenate([b.next_chunk(50) for _ in range(20)], axis=1)
-    assert np.allclose(x, y, atol=1e-3)
+    """DESIGN §8.2: the signal must not depend on how it was chunked. Q21 (unlike DRAGON) carries
+    an HR row, so this also exercises HeartSource's own chunk continuity; random partition sizes
+    (a fixed seed, so the test stays deterministic) exercise more than one arbitrary split."""
+    rng = np.random.default_rng(20260917)
+    total = 1000
+    parts, t = [], 0
+    while t < total:
+        n = min(int(rng.integers(1, 97)), total - t)
+        parts.append(n)
+        t += n
+    a = StreamSource(Q21, 500.0, seed=3)
+    b = StreamSource(Q21, 500.0, seed=3)
+    x = a.next_chunk(total)
+    y = np.concatenate([b.next_chunk(n) for n in parts], axis=1)
+    assert np.allclose(x, y, atol=1e-4)
 
 
 def test_pink_slope_posterior_alpha_and_ecg_only_on_hr():
@@ -140,7 +172,7 @@ def test_markers_and_truth():
 
 
 def test_next_chunk_is_fast_enough_for_a_live_mock_amplifier():
-    """S1: a mock amplifier calls next_chunk 8-10 times a second, so each call has roughly
+    """A mock amplifier calls next_chunk 8-10 times a second, so each call has roughly
     100-125 ms to run in. 32 samples at 256 Hz is 125 ms of signal; construction (~0.5 s, the
     head perturbation and mixing-matrix smoothing) happens once up front and is excluded here."""
     s = StreamSource(Q21, 256.0, seed=13)
@@ -152,19 +184,28 @@ def test_next_chunk_is_fast_enough_for_a_live_mock_amplifier():
     assert elapsed / n_calls < 0.025
 
 
-def test_seed_none_reproduces_its_first_chunk_from_its_own_seed():
-    """S4: a StreamSource built with seed=None draws and exposes a fresh seed (.seed); a second
-    StreamSource built with that seed must reproduce the first one's first chunk exactly, so a
-    recording application can log `.seed` and replay a session byte for byte."""
-    a = StreamSource(Q21, 256.0)
-    first = a.next_chunk(64)
-    b = StreamSource(Q21, 256.0, seed=a.seed)
-    assert np.array_equal(first, b.next_chunk(64))
+def test_seed_none_reproduces_its_first_chunks_truth_and_markers_from_its_own_seed():
+    """A StreamSource built with seed=None draws and exposes a fresh seed (.seed); a second
+    StreamSource built with that seed must reproduce not just the samples but the scheduled truth
+    and due markers too, over several chunks, so a recording application can log `.seed` and
+    replay a whole session, not just its waveform."""
+    ms = MarkerSchedule(kind="periodic", period_s=0.5)
+    a = StreamSource(Q21, 256.0, markers=ms)
+    b = StreamSource(Q21, 256.0, seed=a.seed, markers=ms)
+    chunks_a, chunks_b, markers_a, markers_b = [], [], [], []
+    for _ in range(5):
+        chunks_a.append(a.next_chunk(64))
+        markers_a += a.due_markers(64)
+        chunks_b.append(b.next_chunk(64))
+        markers_b += b.due_markers(64)
+    assert np.array_equal(np.concatenate(chunks_a, axis=1), np.concatenate(chunks_b, axis=1))
+    assert markers_a == markers_b
+    assert [t.to_dict() for t in a.truth] == [t.to_dict() for t in b.truth]
 
 
 def test_unbounded_stream_condition_serialises_and_digests():
-    """S3: StreamSource builds its ConditionSpec with duration_s=math.inf (an endless stream has
-    no fixed length). CaseSpec.to_dict/from_dict and .digest() already turn an infinite duration
+    """StreamSource builds its ConditionSpec with duration_s=math.inf (an endless stream has no
+    fixed length). CaseSpec.to_dict/from_dict and .digest() already turn an infinite duration
     into JSON null and back (case.ConditionSpec.to_dict, _canon.inf_to_json/inf_from_json), so no
     change was needed for this: a case built with an unbounded condition still serialises,
     round-trips and digests like any other case. StreamSource itself never asks for a case id or

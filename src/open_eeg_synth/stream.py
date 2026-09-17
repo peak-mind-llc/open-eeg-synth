@@ -26,6 +26,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from open_eeg_synth.artifacts.base import TruthRecord
 from open_eeg_synth.brain.layer import BrainSpec
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.case import (
@@ -44,6 +45,16 @@ from open_eeg_synth.seeds import fresh_case_seed, stream_rng, stream_seed
 
 
 class StreamSource:
+    """A chunked, phase-continuous stand-in for a real amplifier (DESIGN §7.3).
+
+    Wraps a full-head :class:`~open_eeg_synth.case.CaseSpec`/:class:`~open_eeg_synth.engine.Engine`
+    (brain, sensor noise, ordinary artifacts by default) plus a :class:`~open_eeg_synth.heart.
+    HeartSource` for any heart-rate label, behind the same constructor and call shape as
+    ``classic.RealisticEEGSynthesizer``. Call :meth:`next_chunk` (and, in lockstep,
+    :meth:`due_markers`) repeatedly as new samples are needed; ``.truth`` and ``.seed`` are read
+    at any time.
+    """
+
     def __init__(
         self,
         channel_labels: Sequence[str],
@@ -59,8 +70,8 @@ class StreamSource:
     ) -> None:
         if not channel_labels:
             raise ValueError("channel_labels must be non-empty")
-        if srate <= 0:
-            raise ValueError("srate must be positive")
+        if not math.isfinite(srate) or srate <= 0:
+            raise ValueError(f"srate must be finite and positive, got {srate!r}")
         self.labels = list(channel_labels)
         self.srate = float(srate)
         self._seed = fresh_case_seed() if seed is None else int(seed)
@@ -96,7 +107,7 @@ class StreamSource:
         return self._seed
 
     @property
-    def truth(self) -> list:
+    def truth(self) -> list[TruthRecord]:
         return self.engine.truth()
 
     def next_chunk(self, n_samples: int) -> np.ndarray:
@@ -113,7 +124,13 @@ class StreamSource:
         return out
 
     def due_markers(self, n_samples: int) -> list[tuple[float, str]]:
-        """Same contract as the classic synthesizer: call in lockstep with next_chunk."""
+        """Same contract as the classic synthesizer: call in lockstep with next_chunk.
+
+        Reimplements ``classic.synth``'s marker-clock logic here rather than importing and
+        calling it, because ``open_eeg_synth.classic`` stays byte-identical (it is the recording
+        application's original output, frozen) and so cannot take a dependency on this package's
+        engine or RNG plumbing.
+        """
         end = self._marker_clock_s + n_samples / self.srate
         if self.markers.kind == "none":
             self._marker_clock_s = end
