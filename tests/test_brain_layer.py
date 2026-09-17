@@ -6,6 +6,7 @@ import pytest
 from open_eeg_synth.brain.layer import BrainLayer, BrainSpec
 from open_eeg_synth.brain.network import wire_network
 from open_eeg_synth.brain.placement import placed_centres, region_centres
+from open_eeg_synth.brain.plants import LateralImbalance, apply_modifiers
 from open_eeg_synth.brain.rhythm import Rhythm, draw_patch_params
 from open_eeg_synth.brain.state import StateTimeline
 from open_eeg_synth.channels import CHANNELS_19
@@ -17,13 +18,20 @@ from tests.helpers import band_power, psd_slope, render_whole_and_chunked
 FS = 256.0
 
 
+_MIXING: dict[float, np.ndarray] = {}  # the nominal head's background mixing, by smoothing_mm
+
+
 def _draws(spec: BrainSpec, seed=1):
     """The expensive, drop-independent part of `_build`: the smoothing matrix (an O(n_sources^2)
-    computation) and every subject-level draw, computed once so a test exercising `_build`'s
-    ``drop_offset``/``drop_lag`` more than once for the same spec/seed need not pay for it again.
+    computation, cached per smoothing width) and every subject-level draw, computed once so a test
+    exercising `_build`'s ``drop_offset``/``drop_lag`` more than once for the same spec/seed need
+    not pay for it again.
     """
     head = load_head_model()
-    mixing = head.smoothed_mixing(spec.background.smoothing_mm)
+    sm = spec.background.smoothing_mm
+    if sm not in _MIXING:
+        _MIXING[sm] = head.smoothed_mixing(sm)
+    mixing = _MIXING[sm]
     wiring = wire_network(head, spec.network, FS, stream_rng(seed, "subject:network"))
     placements, f0, offsets, lags = {}, {}, {}, {}
     for r in spec.rhythms:
@@ -46,15 +54,18 @@ def _build(spec: BrainSpec, timeline, seed=1, *, drop_offset=None, drop_lag=None
     repeating this setup. ``draws`` reuses a `_draws(spec, seed)` result instead of recomputing
     it (same spec/seed only) - a caller exercising more than one drop against the same spec/seed
     passes it explicitly so the smoothing matrix is built once, not once per drop.
+
+    Returns ``make(rhythms=None)``; ``rhythms`` replaces the spec's (compiled) rhythms, e.g. with
+    a plant's modifiers applied, while the subject draws (placements, lags) stay the spec's.
     """
     head, mixing, wiring, placements, f0, offsets, lags = draws or _draws(spec, seed)
     offsets, lags = dict(offsets), dict(lags)
     offsets.pop(drop_offset, None)
     lags.pop(drop_lag, None)
 
-    def make():
+    def make(rhythms=None):
         return BrainLayer(
-            spec.rhythms,
+            spec.rhythms if rhythms is None else rhythms,
             spec,
             head,
             FS,
@@ -95,16 +106,18 @@ def test_brain_layer_chunk_invariance_and_eyes_closed_alpha():
 
 
 # Calibrated medians of this test's own measurement (brain layer only, nominal head, eyes closed,
-# average reference, 60 s, the 9 seeds below) for the recipe calibrated in recipes.py (DESIGN
-# §4.3): O1 alpha share 0.567 (range 0.22-0.76), Cz 1-45 Hz RMS 11.9 uV (11.1-13.9).
+# average reference, 60 s, the 9 seeds below) for the recipe as calibrated and then tuned against
+# the realism reference (recipes.py): O1 alpha share 0.605 (range 0.28-0.77), Cz 1-45 Hz RMS
+# 11.6 uV (10.0-14.6). (Before the realism tuning: 0.567 (0.22-0.76) and 11.9 uV (11.1-13.9).)
 #
 # These pins belong to this fixed seed set, which reads low: the population medians of the same
-# measurement over 270 seeds (0-269) are O1 share 0.63 and Cz 12.8 uV. Four of the nine subjects
-# (seeds 2, 3, 100, 101: shares 0.22-0.43) drew alpha patches that project weakly onto O1, which
-# is where the population's lower tail comes from. Thirty disjoint 9-seed sets from those 270
-# have medians from 0.46 to 0.83, so a different seed set needs its own pinned value.
-CAL_O1_ALPHA_SHARE = 0.567
-CAL_CZ_RMS_1_45_UV = 11.9
+# measurement over 270 seeds (0-269) are O1 share 0.65 and Cz 12.7 uV (before: 0.63, 12.8). Four
+# of the nine subjects (seeds 2, 3, 100, 101: shares 0.28-0.39) drew alpha patches that project
+# weakly onto O1, which is where the population's lower tail comes from. Thirty disjoint 9-seed
+# sets from those 270 have medians from 0.45 to 0.83, so a different seed set needs its own pinned
+# value.
+CAL_O1_ALPHA_SHARE = 0.605
+CAL_CZ_RMS_1_45_UV = 11.6
 
 
 def test_calibrated_amplitudes_median_across_seeds():
@@ -128,6 +141,36 @@ def test_calibrated_amplitudes_median_across_seeds():
     assert 0.45 < float(np.median(shares)) < 0.75
     assert 0.7 * CAL_CZ_RMS_1_45_UV < float(np.median(rms)) < 1.3 * CAL_CZ_RMS_1_45_UV
     assert abs(float(np.median(shares)) - CAL_O1_ALPHA_SHARE) < 0.1
+
+
+# A left theta imbalance must stay visible in the recipe's brain layer, since cases are read by eye:
+# LateralImbalance("theta", "left", 0.4) raises the F4/F3 theta (4-8 Hz) power ratio (brain layer,
+# nominal head, eyes closed, average reference, 20 s) by a median 2.06 dB over the six seeds below
+# (per seed 1.23-3.07 dB). Population, seeds 0-239: median +2.10 dB, p10 +1.29, min +0.60; the
+# medians of 40 disjoint six-seed sets run from +1.51 to +2.69. Wider theta patches (40 mm, lags up
+# to 100 ms) gave +0.96 (six-seed medians +0.53 to +1.37), which the floor of 1.5 rejects.
+THETA_IMBALANCE_SHIFT_DB = 2.06
+
+
+def test_theta_lateral_imbalance_is_visible_on_the_resting_brain():
+    spec = resting_brain()
+    plant = LateralImbalance("theta", "left", 0.4)
+    gained = tuple(apply_modifiers(spec.rhythms, plant.modifiers()))
+    f3, f4 = CHANNELS_19.index("F3"), CHANNELS_19.index("F4")
+    shifts = []
+    for seed in range(1, 7):
+        make = _build(spec, StateTimeline.constant("eyes_closed"), seed=seed)
+        balance = []
+        for layer in (make(), make(gained)):
+            x = layer.render(0, int(20 * FS)).astype(float)
+            x -= x.mean(axis=0, keepdims=True)
+            p = band_power(x, FS, 4, 8)
+            balance.append(10 * np.log10(p[f4] / p[f3]))
+        shifts.append(balance[1] - balance[0])
+    median = float(np.median(shifts))
+    assert min(shifts) > 1.0, shifts
+    assert median > 1.5, shifts
+    assert abs(median - THETA_IMBALANCE_SHIFT_DB) < 0.3, shifts
 
 
 def test_eyes_open_collapses_alpha():

@@ -70,7 +70,9 @@ def test_modifiers_compile_onto_base_rhythms():
         for m in p.modifiers()
     ]
     out = {r.name: r for r in apply_modifiers(base, mods)}
-    assert out["theta"].amp_uv == 14.0 and "Pz" in out["theta"].sites
+    base_theta = next(r for r in base if r.name == "theta")
+    assert out["theta"].amp_uv == pytest.approx(2.0 * base_theta.amp_uv)
+    assert "Pz" in out["theta"].sites
     assert out["alpha"].f0_hz == 9.0 and out["alpha"].hemisphere_gain == {"left": 0.5}
     with pytest.raises(KeyError):
         apply_modifiers(base, [PeakShift("gamma", 1.0).modifiers()[0]])
