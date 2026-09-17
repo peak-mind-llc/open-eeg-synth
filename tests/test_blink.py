@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from open_eeg_synth.artifacts import patterns
 from open_eeg_synth.artifacts.base import Occupancy, Remedy, RenderContext
 from open_eeg_synth.artifacts.blink import Blink
 from open_eeg_synth.artifacts.registry import make_artifact
@@ -96,3 +97,39 @@ def test_blink_at_o1_is_the_same_on_a_subset_case():
         peak[label] = float(np.abs(rec.layers["artifact:blink"][rec.channels.index("O1")]).max())
     assert peak["full"] > 0.1
     assert peak["sub"] == pytest.approx(peak["full"], rel=0.01)
+
+
+def test_truth_channels_are_those_at_or_above_0_3_of_the_full_head_peak(monkeypatch):
+    """With the subject jitter fixed at z = 0 the referenced map reads Fp1 1.000, F3 0.331,
+    F2 0.307, F1 0.293, Fz 0.287 and C3 0.078. The truth lists exactly the channels at or above
+    0.3: F1, just under, is left out (a threshold of 0.29 would list it, one of 0.31 or 0.5
+    would drop F2 or F3)."""
+    real = patterns.empirical
+    calls = []
+
+    def at_z0(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **{**kwargs, "z": 0.0})
+
+    monkeypatch.setattr(patterns, "empirical", at_z0)
+    chs = ("Fp1", "F3", "F2", "F1", "Fz", "C3")
+    art = make_artifact("blink")
+    art.bind(
+        RenderContext(
+            chs,
+            FS,
+            None,
+            None,
+            StateTimeline.constant("eyes_open"),
+            stream_rng(1, "t"),
+            stream_rng(1, "s"),
+            Occupancy(),
+            "artifact:blink",
+        )
+    )
+    assert len(calls) == 1 and calls[0]["rng"] is not None
+    assert np.allclose(art.pattern, [1.0, 0.3309, 0.3070, 0.2932, 0.2871, 0.0781], atol=0.0005)
+    assert art.channels == ("Fp1", "F3", "F2")
+    art.render(0, int(60 * FS))
+    truth = art.truth()
+    assert truth and all(t.channels == ("Fp1", "F3", "F2") for t in truth)

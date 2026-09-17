@@ -649,3 +649,138 @@ def test_empirical_fallback_is_continuous_as_a_lone_anchor_crosses_the_floor(rea
     assert not ((step > 0.25 * np.abs(vals[:-1])) & (step > 0.02)).any(), step.max()
     assert vals[200] == pytest.approx(-0.2274, abs=0.0005)
     assert vals[-1] == pytest.approx(-0.4670, abs=0.0005)
+
+
+# --- fix round 5: sparse montages, the jitter cap, the referenced jitter sign -----------------
+
+
+def _mirror_montage(name):
+    """The montage of the mirror-symmetry tests (CHANNELS_19 on the template head plus
+    `_EXTRA_CHANNELS` at `_EXTRA_POS`), at z = 0: each channel's value and position."""
+    head = load_head_model()
+    chs = [*CHANNELS_19, *_EXTRA_CHANNELS]
+    pos = np.vstack([head.electrode_pos, _EXTRA_POS])
+    v = patterns.empirical(name, chs, electrode_pos=pos, z=0.0)
+    return dict(zip(chs, v, strict=True)), dict(zip(chs, pos, strict=True))
+
+
+@pytest.mark.parametrize(
+    ("name", "chs", "before"),
+    [
+        ("blink", ("F7", "F8", "F9", "F10"), {"F9": -3.336, "F10": -3.077}),
+        ("blink", ("F7", "F8", "A1", "A2"), {"A1": -1.545, "A2": -1.523}),
+        ("blink", ("T3", "T4", "A1", "A2"), {"A1": 0.174, "A2": 0.181}),
+        ("heog", ("O1", "Pz", "F9"), {"F9": -6.858}),
+    ],
+)
+def test_sparse_montage_fallbacks_keep_the_full_montage_sign_and_size(real_eog, name, chs, before):
+    """The re-review's small montages (values before fix round 5 in `before`). In each, every
+    present channel either disagrees in sign with the dipole (blink F7, T3, T4; heog O1) or sits
+    at its null (blink F8, cos +0.041; heog Pz, cos +0.004), so no anchor is usable and each
+    missing channel is exactly the analytic dipole. Against the mirror-test montage (see
+    `_mirror_montage`) each keeps its sign and is at most 3x its size there. The heog F9
+    dipole value (-0.238) is 0.30 of the montage value (-0.792): the dipole puts the heog peak at
+    Fp1/Fp2, where the real map peaks at F7/F8, so the lower bound here is 1/4, not 1/3."""
+    ref, where = _mirror_montage(name)
+    pos = np.array([where[c] for c in chs])
+    v = patterns.empirical(name, list(chs), electrode_pos=pos, z=0.0)
+    assert np.all(np.abs(v) <= 1.0)
+    centre, moment = patterns._FALLBACK[name]
+    for i, c in enumerate(chs):
+        if c not in before:
+            continue
+        assert v[i] == patterns.analytic_dipole(centre, moment, pos[i : i + 1])[0], c
+        assert np.sign(v[i]) == np.sign(ref[c]), (c, v[i], ref[c])
+        assert 0.25 * abs(ref[c]) <= abs(v[i]) <= 3.0 * abs(ref[c]), (c, v[i], ref[c])
+        assert abs(v[i] - before[c]) > 0.1  # the old value was off in size or sign
+
+
+def test_mirror_montage_reference_values(real_eog):
+    """The montage the sparse tests compare against, pinned (z = 0). Fix round 5 moved blink A2
+    (-0.106 -> -0.090) and F10 (-0.256 -> -0.213): F8, at the dipole's null (cos +0.041), no
+    longer anchors them; F7, their mirror anchor, disagrees in sign and never did."""
+    blink, _ = _mirror_montage("blink")
+    heog, _ = _mirror_montage("heog")
+    want_blink = {"A1": -0.107, "A2": -0.090, "F9": -0.239, "F10": -0.213}
+    for c, x in want_blink.items():
+        assert blink[c] == pytest.approx(x, abs=0.001), c
+    assert heog["F9"] == pytest.approx(-0.792, abs=0.001)
+
+
+# Random sparse requests: 2-6 channels of CHANNELS_19 plus 1-2 of `_EXTRA_CHANNELS`, z = 0,
+# against `_mirror_montage` (the reviewer's sweep, another seed). Before fix round 5 the
+# reviewer's seed gave (blink / heog) 71 / 27 fallbacks more than 3x too large and 18 / 16 sign
+# flips; on this seed 57f3560 gives 70 / 34 and 12 / 16. Measured now, over 4455 fallbacks per
+# map: no flips and 0 / 6 more than 3x too large. All 6 are heog TP9 or P9 (3.1x) with O2 as the
+# only usable anchor: the referenced heog map is lopsided there (O2 +0.090, O1 +0.012); O2 is far
+# from the model's null (cos +0.153). The clip to the map peak fires 0 / 405 times, all at heog
+# F9 (178) and F10 (227), which lie nearer the eyes than F7/F8 (see `empirical`).
+_SWEEP_REQUESTS = 3000
+_SWEEP_MAX_OVER_3X = {"blink": 0, "heog": 6}
+
+
+@pytest.mark.parametrize("name", ["blink", "heog"])
+def test_sparse_montage_sweep_keeps_sign_range_and_size(real_eog, name):
+    ref, where = _mirror_montage(name)
+    rng = np.random.default_rng(20260917)
+    over = 0
+    for _ in range(_SWEEP_REQUESTS):
+        present = [str(c) for c in rng.choice(CHANNELS_19, int(rng.integers(2, 7)), replace=False)]
+        k = int(rng.integers(1, 3))
+        missing = [str(c) for c in rng.choice(_EXTRA_CHANNELS, k, replace=False)]
+        chs = present + missing
+        v = patterns.empirical(name, chs, electrode_pos=np.array([where[c] for c in chs]), z=0.0)
+        assert np.all(np.abs(v) <= 1.0), (chs, v)
+        for c, x in zip(missing, v[len(present) :], strict=True):
+            assert np.sign(x) == np.sign(ref[c]), (chs, c, x, ref[c])
+            over += abs(x) > 3.0 * abs(ref[c])
+    assert over <= _SWEEP_MAX_OVER_3X[name], over
+
+
+def _referenced(name):
+    """The raw file map for `name`, its T9/T10-referenced mean and its sd, computed here."""
+    f = patterns.load_eog_patterns()
+    names = [str(c) for c in f["channel_names"]]
+    raw = np.asarray(f[f"{name}_mean"], float)
+    mean = raw - raw[[names.index("T9"), names.index("T10")]].mean()
+    return names, raw, mean, np.asarray(f[f"{name}_sd"], float)
+
+
+def _jittered(name, z, ch, anchor):
+    """`ch`'s jittered file value at z, before the division by the map peak, recovered from its
+    ratio to `anchor`: a channel whose sd is below 0.9 x |mean| (so its step is its sd) and whose
+    sign the T9/T10 reference does not change."""
+    names, raw, mean, sd = _referenced(name)
+    a = names.index(anchor)
+    assert sd[a] < 0.9 * abs(mean[a]) and np.sign(raw[a]) == np.sign(mean[a])
+    v = patterns.empirical(name, [ch, anchor], z=z)
+    return v[0] / v[1] * (mean[a] + z * np.sign(mean[a]) * sd[a])
+
+
+@pytest.mark.parametrize(("name", "ch", "anchor"), [("blink", "T4", "Fp1"), ("heog", "FT7", "F7")])
+@pytest.mark.parametrize("z", [-1.0, 1.0])
+def test_real_file_jitter_step_is_capped_at_0_9_of_the_mean(real_eog, name, ch, anchor, z):
+    """A channel whose sd exceeds its |mean| (blink T4: sd 0.059, |mean| 0.044; heog FT7: sd
+    0.327, |mean| 0.297) moves by exactly 0.9 x |mean| at z = +-1 (a cap of 0.5 or 0.99 would
+    move it by 0.5 or 0.99 x |mean|)."""
+    names, _, mean, sd = _referenced(name)
+    i = names.index(ch)
+    assert sd[i] > abs(mean[i])
+    step = (_jittered(name, z, ch, anchor) - mean[i]) / (z * np.sign(mean[i]))
+    assert step == pytest.approx(0.9 * abs(mean[i]), rel=1e-9)
+
+
+@pytest.mark.parametrize(("name", "ch", "anchor"), [("blink", "FC5", "Fp1"), ("heog", "FC1", "F7")])
+def test_real_file_jitter_direction_follows_the_referenced_mean(real_eog, name, ch, anchor):
+    """The jitter moves a channel along the sign of its REFERENCED mean. The T9/T10 reference
+    flips blink FC5 (raw -0.009, referenced +0.194; the largest such channel of 34) and heog FC1
+    (raw -0.008, referenced +0.022; the largest of 5): as z grows both move up, away from zero,
+    where the raw sign would move them down."""
+    names, raw, mean, sd = _referenced(name)
+    i = names.index(ch)
+    assert raw[i] < 0.0 < mean[i]
+    step = min(sd[i], 0.9 * abs(mean[i]))
+    for z in (-1.0, -0.5, 0.5, 1.0):
+        got = _jittered(name, z, ch, anchor)
+        assert got == pytest.approx(mean[i] + z * step, rel=1e-9), z
+        assert (got > mean[i]) == (z > 0.0)
