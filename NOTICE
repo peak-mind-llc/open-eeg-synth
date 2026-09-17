@@ -1,0 +1,8 @@
+open-eeg-synth
+Copyright 2026 Peak Mind LLC
+
+This product includes software developed by Peak Mind LLC. The classic engine
+(src/open_eeg_synth/classic/) was moved from Coherence Recorder.
+
+Third-party data notices for bundled head-model and reference-derived data
+files are listed in THIRD_PARTY_NOTICES.md when those files are present.
