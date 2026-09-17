@@ -103,8 +103,13 @@ def resting_brain() -> BrainSpec:
 
 
 def ordinary_artifacts() -> tuple[ArtifactSpec, ...]:
-    """The default artifact set (DESIGN §5.6); empty until Task 20 fills it in."""
-    return ()
+    """Blinks, eye movements and occasional jaw tension — what every ordinary recording has
+    (DESIGN §5.6)."""
+    return (
+        ArtifactSpec("blink"),
+        ArtifactSpec("eye_movement"),
+        ArtifactSpec("emg", {"side": "random"}),
+    )
 
 
 def resting_case(
