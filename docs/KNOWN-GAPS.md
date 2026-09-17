@@ -92,3 +92,31 @@ counterweight to it. Numbers here were measured on 0.2.0 unless a line says othe
   Python 3.10, 3.11 and 3.12 in CI, and on one developer machine. No older-numpy matrix runs.
 - **`docs/PLAN.md` is a long historical record**, not a description of the package. Read
   `docs/DESIGN.md` instead; the plan is kept because it shows how each decision was reached.
+
+## 6. Growing the package: extension and documentation
+
+This package is expected to grow a lot: many more artifacts, and more planted patterns. The
+extension points exist, but the on-ramp for someone who has not read the whole design does not.
+These are the planned pieces of work, roughly in the order they pay off.
+
+- **A guide for writing a plug-in.** `docs/DESIGN.md` §5.1 states the contract, but there is no page
+  that walks from an empty file to a working artifact: what to subclass, how to draw a scalp pattern,
+  what each truth field means, which remedies to declare, how to register it in this repo, and how to
+  ship one from another package through the entry point. One complete worked example, an electrode
+  pop in a few dozen lines, would carry most of it.
+- **A continuous-artifact base class.** Mains hum, sweat drift, a loose lead and heartbeat bleed are
+  all steady rather than event-shaped. The engine already accepts any registered class with the right
+  methods, so this is a base class and one shipped example, not an engine change.
+- **A public test kit.** The invariants every plug-in must meet are tested here but not offered to
+  outside authors: identical output whatever the chunk size, a truth record that matches the rendered
+  layer, amplitudes that do not depend on which channels were requested, and seeded reproducibility.
+  A small `open_eeg_synth.testing` module with those checks would let an author prove a new plug-in in
+  a few lines.
+- **Planted patterns cannot be discovered from another package.** Artifacts load through an entry
+  point; patterns register only in-process, so a case file naming a third-party pattern fails to load.
+  Mirroring the artifact discovery would close that.
+- **Guidance on when a new pattern needs new code.** Most patterns should be composed from the six
+  primitives, as the first consumer does for all 25 of its patterns. The contributing notes should say
+  so, and say what justifies a seventh primitive.
+- **An API reference.** The README shows the common path. There is no listing of the public names with
+  their arguments, so today the source is the reference.
