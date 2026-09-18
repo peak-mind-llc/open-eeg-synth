@@ -39,6 +39,11 @@ counterweight to it. Numbers here were measured on 0.2.0 unless a line says othe
   properly.
 - **Truth channel lists can look lopsided.** A blink lists F7 without F8 for some subjects, because the
   measured map is asymmetric and the cut is a fixed 0.3 of the peak.
+- **Artifact size does not vary between people.** Every subject blinks at the same typical size (about
+  120 µV at Fp1), so no case has a strong blinker or someone who barely blinks; the same holds for jaw
+  tension. Only blink-to-blink variation exists. The fix is a subject-level size drawn from a measured
+  spread: the script that derived the eye maps already finds every blink per subject in the public
+  recordings, so the between-person spread can come from data.
 - **Only blinks and eye movements vary per subject.** Jaw tension uses one analytic shape with no
   between-subject variation, and the dead channel has none by nature.
 - **The head model has no eye or muscle sources.** Both come from measured scalp maps and analytic
