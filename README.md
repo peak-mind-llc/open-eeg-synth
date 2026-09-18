@@ -196,7 +196,7 @@ the next section before relying on these numbers.
 - **macOS with numpy older than 2.3 (the last numpy release that still supports Python 3.10)**:
   Accelerate's `matmul` raises spurious `RuntimeWarning`s ("encountered in matmul") during the
   brain layer's matrix work. The samples are identical either way; a consuming application can
-  silence them with `warnings.filterwarnings("ignore", "encountered in matmul", RuntimeWarning)`.
+  silence them with `warnings.filterwarnings("ignore", ".*encountered in matmul", RuntimeWarning)`.
   The package itself does not suppress them, so it never hides a real warning from your own code.
 
 ## Development
