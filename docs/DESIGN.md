@@ -1779,7 +1779,7 @@ addopts = "-ra -m 'not realism and not slow'"   # markers: realism, slow
 - **macOS with numpy older than 2.3** (the last numpy release that still supports Python 3.10):
   Accelerate's `matmul` raises spurious `RuntimeWarning`s ("encountered in matmul") during the
   brain layer's matrix work; the samples are identical either way. A consuming application can
-  silence them with `warnings.filterwarnings("ignore", "encountered in matmul", RuntimeWarning)`;
+  silence them with `warnings.filterwarnings("ignore", ".*encountered in matmul", RuntimeWarning)`;
   this package does not suppress them itself, so it never hides a real warning from consumer code
   (README "Known gaps").
 

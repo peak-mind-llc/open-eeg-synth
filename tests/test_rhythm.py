@@ -13,6 +13,7 @@ from open_eeg_synth.brain.rhythm import (
     BurstGate,
     Rhythm,
     RhythmSpec,
+    WaveformShape,
     _Gate,
     _orient_patches,
     _Oscillator,
@@ -25,6 +26,65 @@ from open_eeg_synth.seeds import stream_rng, stream_seed
 from tests.helpers import band_power, render_whole_and_chunked, welch
 
 FS = 256.0
+
+
+def _render_oscillator(spec: RhythmSpec, seed: int, chunks: tuple[int, ...]) -> np.ndarray:
+    oscillator = _Oscillator(FS, spec.f0_hz, spec, np.random.default_rng(seed))
+    return np.concatenate([oscillator.render(n) for n in chunks])
+
+
+def test_default_waveform_preserves_legacy_dict_and_explicit_zero_preserves_samples():
+    """Adding the optional shape must not change old identities or default samples."""
+    legacy = RhythmSpec("mu", 16.0, 12.0, sites=("C3",), f_sd=0.0, env_sd=0.0)
+    assert "waveform" not in legacy.to_dict()
+
+    explicit = dataclasses.replace(legacy, waveform=WaveformShape(0.0, 0.7))
+    assert explicit.to_dict()["waveform"] == {
+        "second_harmonic_ratio": 0.0,
+        "second_harmonic_phase_rad": 0.7,
+    }
+    assert RhythmSpec.from_dict(explicit.to_dict()) == explicit
+    np.testing.assert_array_equal(
+        _render_oscillator(legacy, 17, (2048,)),
+        _render_oscillator(explicit, 17, (2048,)),
+    )
+
+
+@pytest.mark.parametrize("ratio", [-0.01, 0.61, float("nan"), float("inf")])
+def test_waveform_rejects_unsafe_second_harmonic_ratio(ratio):
+    """A bad ratio could turn the rhythm control into a sharp-transient generator."""
+    with pytest.raises(ValueError):
+        WaveformShape(second_harmonic_ratio=ratio)
+
+
+@pytest.mark.parametrize("phase", [float("nan"), float("inf"), float("-inf")])
+def test_waveform_rejects_nonfinite_phase(phase):
+    with pytest.raises(ValueError):
+        WaveformShape(second_harmonic_phase_rad=phase)
+
+
+def test_shaped_waveform_has_requested_second_harmonic_and_is_chunk_invariant():
+    """The shaped carrier must preserve streaming and express the configured harmonic ratio."""
+    spec = RhythmSpec(
+        "mu",
+        16.0,
+        12.0,
+        sites=("C3",),
+        f_sd=0.0,
+        env_sd=0.0,
+        env_lo=1.0,
+        env_hi=1.0,
+        waveform=WaveformShape(0.25, -np.pi / 2),
+    )
+    whole = _render_oscillator(spec, 19, (2048,))
+    chunked = _render_oscillator(spec, 19, (137, 509, 41, 1361))
+    np.testing.assert_allclose(whole, chunked, rtol=0.0, atol=1e-12)
+
+    spectrum = np.abs(np.fft.rfft(whole))
+    frequencies = np.fft.rfftfreq(whole.size, 1.0 / FS)
+    fundamental = spectrum[np.argmin(np.abs(frequencies - 16.0))]
+    second_harmonic = spectrum[np.argmin(np.abs(frequencies - 32.0))]
+    assert second_harmonic / fundamental == pytest.approx(0.25, abs=0.002)
 
 
 def test_placed_centres_mirror_pairs_and_midline():
