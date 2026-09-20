@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -26,6 +27,23 @@ class BurstGate:
 
 
 @dataclass(frozen=True)
+class WaveformShape:
+    """Optional smooth harmonic shaping for a rhythm carrier."""
+
+    second_harmonic_ratio: float = 0.0
+    second_harmonic_phase_rad: float = 0.0
+
+    def __post_init__(self) -> None:
+        canonical_fields(self)
+        if not math.isfinite(self.second_harmonic_ratio) or not (
+            0.0 <= self.second_harmonic_ratio <= 0.6
+        ):
+            raise ValueError("second_harmonic_ratio must be finite and in [0.0, 0.6]")
+        if not math.isfinite(self.second_harmonic_phase_rad):
+            raise ValueError("second_harmonic_phase_rad must be finite")
+
+
+@dataclass(frozen=True)
 class RhythmSpec:
     name: str
     f0_hz: float
@@ -47,6 +65,7 @@ class RhythmSpec:
     state_f0_shift_hz: dict[str, float] = field(default_factory=dict)
     hemisphere_gain: dict[str, float] = field(default_factory=dict)
     burst: BurstGate | None = None
+    waveform: WaveformShape | None = None
 
     def __post_init__(self) -> None:
         canonical_fields(self)
@@ -66,6 +85,8 @@ class RhythmSpec:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["sites"] = list(self.sites)
+        if self.waveform is None:
+            d.pop("waveform")
         d["burst"] = (
             None
             if self.burst is None
@@ -85,6 +106,9 @@ class RhythmSpec:
         d["burst"] = (
             None if b is None else BurstGate(tuple(b["on_s"]), tuple(b["off_s"]), b["ramp_s"])
         )
+        waveform = d.get("waveform")
+        if waveform is not None:
+            d["waveform"] = WaveformShape(**waveform)
         return cls(**d)
 
 
@@ -97,6 +121,7 @@ class _Oscillator:
         self.lenv = OU(1, fs, mu=0.0, sigma=spec.env_sd, tau_s=spec.env_tau_s, rng=rng)
         self.phase = float(rng.uniform(0.0, 2.0 * np.pi))
         self.lo, self.hi = np.log(spec.env_lo), np.log(spec.env_hi)
+        self.waveform = spec.waveform
 
     def render(self, n: int, f0_shift: np.ndarray | float = 0.0) -> np.ndarray:
         white = self.rng.standard_normal((n, 2)).T
@@ -104,6 +129,13 @@ class _Oscillator:
         env = np.exp(np.clip(self.lenv.step(white[1:])[0], self.lo, self.hi))
         ph = self.phase + 2.0 * np.pi * np.cumsum(f) / self.fs
         self.phase = float(ph[-1] % (2.0 * np.pi))
+        if self.waveform is not None and self.waveform.second_harmonic_ratio != 0.0:
+            ratio = self.waveform.second_harmonic_ratio
+            carrier = np.sin(ph) + ratio * np.sin(
+                2.0 * ph + self.waveform.second_harmonic_phase_rad
+            )
+            carrier /= np.sqrt(1.0 + ratio * ratio)
+            return env * carrier
         return env * np.sin(ph)
 
 

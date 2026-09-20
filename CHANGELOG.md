@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format follows
 ## 0.2.0 (unreleased)
 
 ### Added
+- Rhythm specifications can opt into a smooth second-harmonic waveform shape. Legacy dictionaries
+  omit the optional field, and the default and explicit zero-ratio forms preserve the existing
+  signal samples exactly.
 - A layered engine. `Engine.render(t0, n)` is the one signal path; a recording is the sum of named
   layers (brain, one layer per artifact, sensor noise, transforms), and every layer stays
   retrievable. One case seed derives every random stream by name, and chunking does not change the
