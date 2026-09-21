@@ -16,8 +16,9 @@ A recording is the sum of separate layers, and every layer can be rebuilt from t
   theta, beta and sensorimotor rhythms, all generated as cortical sources and projected through a
   real head model (Colin27, 19 channels), plus any patterns you plant (a focal slow rhythm, rhythmic
   bursts, a one-sided reduction, a shifted alpha peak, and so on);
-- **artifacts**: blinks, horizontal eye movements, jaw-muscle bursts, electrode pops and a dead
-  channel, as plug-ins;
+- **artifacts**: blinks, horizontal eye movements, jaw-muscle bursts, electrode pops, intermittent
+  contact noise, sweat drift, persistent noisy channels, 50/60Hz mains hum and a dead channel, as
+  plug-ins;
   other packages can add more;
 - **sensor**: amplifier noise.
 

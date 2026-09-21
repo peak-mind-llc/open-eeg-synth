@@ -22,10 +22,11 @@ All notable changes to this project are documented here. The format follows
   rhythm gains and artifact rates. Plant and rhythm sites are canonicalised
   against the head model's channel names (`FocalSlow("f7") == FocalSlow("F7")`), and a site named
   twice raises.
-- An artifact plug-in framework (event and transform artifacts, a registry with entry-point
-  discovery, empirical and analytic scalp patterns) and five plug-ins: blink, horizontal eye
-  movement, jaw EMG, electrode pop and dead channel. Every event writes a truth record with its
-  channels, times, size and suggested remedies.
+- An artifact plug-in framework (event, continuous and transform artifacts, a registry with
+  entry-point discovery, empirical and analytic scalp patterns) and nine plug-ins: blink,
+  horizontal eye movement, jaw EMG, electrode pop, contact noise, sweat drift, persistent noisy
+  channel, mains hum and dead channel. Every artifact writes truth with its channels, times, size,
+  mechanism parameters and suggested remedies.
 - Case files: `make_case` and `write_case` write one EDF per condition (microvolts, no annotations,
   anonymised date), a sealed truth file and, optionally, every layer; `render_layers` rebuilds a
   condition's layers from the truth file, checks them, and warns when the file was made under

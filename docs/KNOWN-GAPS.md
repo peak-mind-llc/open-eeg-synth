@@ -48,10 +48,10 @@ counterweight to it. Numbers here were measured on 0.2.0 unless a line says othe
   between-subject variation, and the dead channel has none by nature.
 - **The head model has no eye or muscle sources.** Both come from measured scalp maps and analytic
   shapes bolted on, which is why the two points above exist.
-- **Missing artifact types.** Loose lead, bridged pair, mains hum at 50 or 60 Hz, sweat drift,
-  movement and pulse are all planned for 0.3. Cleaning practice needs them to feel real. Electrode
-  pop now exists, using the design's predeclared engineering ranges; those ranges still need
-  calibration against reviewed recordings.
+- **Missing artifact types.** Loose-lead coordination, bridged pairs, movement, heartbeat bleed and
+  pulse remain planned. Electrode pop, contact noise, noisy channel, mains hum and sweat drift now
+  exist, using explicitly labelled engineering ranges that still need calibration against reviewed
+  recordings.
 
 ## 3. Engine, scheduler and identity
 
@@ -111,9 +111,9 @@ These are the planned pieces of work, roughly in the order they pay off.
   what each truth field means, which remedies to declare, how to register it in this repo, and how to
   ship one from another package through the entry point. One complete worked example, an electrode
   pop in a few dozen lines, would carry most of it.
-- **A continuous-artifact base class.** Mains hum, sweat drift, a loose lead and heartbeat bleed are
-  all steady rather than event-shaped. The engine already accepts any registered class with the right
-  methods, so this is a base class and one shipped example, not an engine change.
+- **Contact-state coordination.** The continuous-artifact base and the first continuous acquisition
+  artifacts now exist. A future `ContactTimeline` should coordinate impedance, loose-lead drift,
+  pops and the recording application's impedance display rather than drawing each independently.
 - **A public test kit.** The invariants every plug-in must meet are tested here but not offered to
   outside authors: identical output whatever the chunk size, a truth record that matches the rendered
   layer, amplitudes that do not depend on which channels were requested, and seeded reproducibility.

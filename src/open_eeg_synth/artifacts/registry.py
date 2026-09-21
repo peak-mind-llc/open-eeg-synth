@@ -9,9 +9,11 @@ from typing import TYPE_CHECKING, Any, TypeVar
 if TYPE_CHECKING:
     from typing import TypeAlias
 
-    from open_eeg_synth.artifacts.base import EventArtifact, TransformArtifact
+    from open_eeg_synth.artifacts.base import ContinuousArtifact, EventArtifact, TransformArtifact
 
-    ArtifactClass: TypeAlias = type[EventArtifact] | type[TransformArtifact]
+    ArtifactClass: TypeAlias = (
+        type[ContinuousArtifact] | type[EventArtifact] | type[TransformArtifact]
+    )
 
 ARTIFACTS: dict[str, ArtifactClass] = {}
 _discovered = False
@@ -58,7 +60,9 @@ def discover() -> None:
         )
 
 
-def make_artifact(kind: str, **params: Any) -> EventArtifact | TransformArtifact:
+def make_artifact(
+    kind: str, **params: Any
+) -> ContinuousArtifact | EventArtifact | TransformArtifact:
     """An instance of ``kind``; an unknown kind raises ``ValueError`` listing the known kinds."""
     discover()
     if kind not in ARTIFACTS:

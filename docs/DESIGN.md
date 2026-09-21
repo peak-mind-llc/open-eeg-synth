@@ -1001,6 +1001,15 @@ records the channel, polarity, peak, duration and time constant; remedies are `(
 MARK_BAD_CHANNEL)`. These are the predeclared engineering ranges from §5.7, not fitted population
 distributions.
 
+**Acquisition-artifact family** — four separately registered mechanisms share the same authored
+truth contract without sharing one generic waveform. `contact_noise` is a finite, irregular,
+channel-local crackle event. `noisy_channel` is persistent high-frequency-emphasised broadband
+noise on one channel. `mains_hum` is a required 50 or 60Hz fundamental with slow amplitude
+modulation, unequal seeded channel gains and only those harmonics below Nyquist. `sweat_drift` is
+a continuous low-frequency OU wander over a seeded left, right or bilateral frontotemporal field.
+Their defaults are bounded engineering settings, not fitted prevalence or population
+distributions. Truth preserves acquisition-space channels before a consumer rereferences them.
+
 ### 5.7 Future plug-ins and how they fit
 
 | plug-in | base | pattern source | signal | truth | remedies |
@@ -1009,18 +1018,18 @@ distributions.
 | loose lead | `ContinuousArtifact` (stateful `render`) | channel-local | low-frequency drift + pop bursts whose rate scales with `ContactTimeline.impedance(ch, t)`; the same timeline feeds a recording app's impedance display | channel, spans where impedance > threshold | `MARK_BAD_CHANNEL`, `INTERPOLATE`, `RAISE_HIGH_PASS` |
 | bridged pair | `TransformArtifact` | two channels | both channels → their mean + shared 1 µV noise | pair | `MARK_BAD_CHANNEL` |
 | dead channel (ships) | `TransformArtifact` | one channel | see §5.6 | channel | `MARK_BAD_CHANNEL`, `INTERPOLATE` |
-| mains hum | `ContinuousArtifact` | per-channel gains (loose channels louder) | `freq_hz` **required** (50 or 60; no default), harmonics 2–3 at −20 dB, slow AM | channels, freq | `NOTCH` |
-| sweat drift | `ContinuousArtifact` | frontal/temporal focal | 0.05–0.3 Hz OU wander, 50–500 µV | channels, spans | `RAISE_HIGH_PASS`, `MASK_SEGMENT` |
+| mains hum (ships) | `ContinuousArtifact` | seeded per-channel gains | `freq_hz` **required** (50 or 60; no default), valid harmonics at −20 dB, slow AM | channels, freq, gains, harmonics | `NOTCH`, `RE_REFERENCE` |
+| sweat drift (ships) | `ContinuousArtifact` | frontal/temporal focal | 0.05–0.3 Hz OU wander | channels, side, corner, RMS | `RAISE_HIGH_PASS`, `MASK_SEGMENT` |
+| contact noise (ships) | `EventArtifact` | channel-local | finite irregular broadband crackle with impulses | channel, span, RMS, impulse count | `MASK_SEGMENT`, `MARK_BAD_CHANNEL` |
+| noisy channel (ships) | `ContinuousArtifact` | channel-local | persistent high-frequency-emphasised broadband noise | channel, RMS | `MARK_BAD_CHANNEL`, `INTERPOLATE` |
 | movement | `EventArtifact` | analytic focal, random centre | 0.5–3 s low-frequency swing on many channels + EMG mix | channels, span | `MASK_SEGMENT` |
 | heartbeat bleed | `ContinuousArtifact` | empirical or analytic left-lateral | `HeartSource` beat times → QRS-shaped 5–30 µV at each beat | channels | `REMOVE_COMPONENT` |
 | pulse wave | `ContinuousArtifact` | channel-local (an electrode over a vessel) | `HeartSource` beats → smooth 20–100 µV wave lagging the beat ~250 ms | channel | `MARK_BAD_CHANNEL`, `REMOVE_COMPONENT` |
 | forehead / neck muscle | `EventArtifact` | analytic focal at Fp1/Fp2 (frontalis) or O1/O2/T5/T6 (neck) | the jaw EMG generator with a different centre and spectrum peak (frontalis ~40 Hz) | side, channels | `MASK_SEGMENT`, `REMOVE_COMPONENT` |
 
-`EventArtifact`, `TransformArtifact`, the pattern sources and `HeartSource` exist in v0.2.0.
-`ContinuousArtifact` and `ContactTimeline` do not yet: a continuous plug-in is an additive layer with a
-stateful `render`, and `make_engine` already accepts any registered class with `mode = "additive"`,
-`bind`, `render`, `truth`, `params` and a `name`, so adding that base class needs no change to the
-engine or the truth schema.
+`EventArtifact`, `ContinuousArtifact`, `TransformArtifact`, the pattern sources and
+`HeartSource` exist. `ContactTimeline` does not yet; loose-lead impedance coordination remains a
+future layer rather than being implied by the independent mechanisms above.
 
 ---
 

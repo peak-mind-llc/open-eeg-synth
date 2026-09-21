@@ -496,6 +496,53 @@ class EventArtifact(_ParamsMixin, ABC):
         ]
 
 
+class ContinuousArtifact(_ParamsMixin, ABC):
+    """A seeded additive artifact rendered contiguously for the whole recording."""
+
+    kind: ClassVar[str] = "continuous"
+    mode: ClassVar[str] = "additive"
+    jitter_pattern: ClassVar[str | None] = None
+
+    @property
+    def name(self) -> str:
+        return self.layer_name
+
+    def bind(self, ctx: RenderContext) -> None:
+        self.ctx = ctx
+        self.fs = ctx.fs
+        self.n_ch = len(ctx.channels)
+        self.layer_name = ctx.layer_name
+        self._rendered = 0
+        self._peak_uv = 0.0
+        self._bind_continuous()
+
+    def _bind_continuous(self) -> None:
+        """Reset subclass state after the render context has been installed."""
+
+    def render(self, t0: int, n: int) -> np.ndarray:
+        if t0 != self._rendered:
+            raise ValueError(
+                f"{self.kind}: render must be contiguous: expected t0={self._rendered}, got {t0}"
+            )
+        if n <= 0:
+            raise ValueError("n must be positive")
+        block = np.asarray(self._render_block(t0, n), dtype=np.float32)
+        if block.shape != (self.n_ch, n):
+            raise ValueError(f"{self.kind}: rendered {block.shape}, expected {(self.n_ch, n)}")
+        self._rendered += n
+        self._peak_uv = max(self._peak_uv, float(np.max(np.abs(block), initial=0.0)))
+        return block
+
+    @abstractmethod
+    def _render_block(self, t0: int, n: int) -> np.ndarray: ...
+
+    @abstractmethod
+    def _truth_record(self) -> TruthRecord: ...
+
+    def truth(self) -> list[TruthRecord]:
+        return [self._truth_record()] if self._rendered else []
+
+
 class TransformArtifact(_ParamsMixin, ABC):
     kind: ClassVar[str] = "transform"
     mode: ClassVar[str] = "transform"
