@@ -15,12 +15,19 @@ from open_eeg_synth.seeds import stream_rng
 FS = 256.0
 
 
-def _bind(artifact, *, seed: int = 1) -> None:
-    head = load_head_model()
+def _bind(
+    artifact,
+    *,
+    seed: int = 1,
+    fs: float = FS,
+    channels: tuple[str, ...] | None = None,
+) -> None:
+    full_head = load_head_model()
+    head = full_head if channels is None else full_head.subset(channels)
     artifact.bind(
         RenderContext(
             head.channels,
-            FS,
+            fs,
             head.electrode_pos,
             head,
             StateTimeline.constant("eyes_open"),
@@ -132,6 +139,35 @@ def test_mains_hum_has_requested_fundamental_and_only_valid_harmonics():
 def test_mains_frequency_must_be_50_or_60_hz(freq):
     with pytest.raises(ValueError, match="50 or 60"):
         make_artifact("mains_hum", freq_hz=freq)
+
+
+def test_mains_field_is_stable_across_channel_subsets_and_order():
+    full = make_artifact("mains_hum", freq_hz=60.0)
+    _bind(full, seed=47)
+    full_values = full.render(0, 256)
+
+    channels = ("O2", "T3", "Fp1")
+    subset = make_artifact("mains_hum", freq_hz=60.0)
+    _bind(subset, seed=47, channels=channels)
+    subset_values = subset.render(0, 256)
+
+    for index, channel in enumerate(channels):
+        assert np.array_equal(
+            subset_values[index],
+            full_values[CHANNELS_19.index(channel)],
+        )
+
+
+def test_mains_fundamental_must_be_below_nyquist():
+    artifact = make_artifact("mains_hum", freq_hz=60.0)
+    with pytest.raises(ValueError, match="Nyquist"):
+        _bind(artifact, fs=100.0)
+
+
+def test_mains_am_sidebands_must_fit_below_nyquist():
+    artifact = make_artifact("mains_hum", freq_hz=60.0, am_hz=10.0, am_depth=0.25)
+    with pytest.raises(ValueError, match="sideband.*Nyquist"):
+        _bind(artifact, fs=128.0)
 
 
 @pytest.mark.parametrize(

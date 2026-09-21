@@ -8,6 +8,7 @@ import numpy as np
 
 from open_eeg_synth.artifacts.base import ContinuousArtifact, Remedy, TruthRecord
 from open_eeg_synth.artifacts.registry import register
+from open_eeg_synth.headmodel import load_head_model
 
 
 @register
@@ -44,12 +45,26 @@ class MainsHum(ContinuousArtifact):
         self.harmonic_ratio = float(harmonic_ratio)
 
     def _bind_continuous(self) -> None:
-        gains = self.ctx.subject_rng.lognormal(0.0, self.gain_sigma, self.n_ch)
-        self.gains = gains / np.median(gains)
+        nyquist = self.fs / 2
+        if self.freq_hz >= nyquist:
+            raise ValueError("mains fundamental must be below Nyquist")
+        if self.am_depth > 0 and self.freq_hz + self.am_hz >= nyquist:
+            raise ValueError("mains AM upper sideband must be below Nyquist")
+
+        template_channels = load_head_model().channels
+        unknown = set(self.ctx.channels) - set(template_channels)
+        if unknown:
+            raise ValueError(
+                f"mains_hum channels are absent from the template head: {sorted(unknown)}"
+            )
+        full_gains = self.ctx.subject_rng.lognormal(0.0, self.gain_sigma, len(template_channels))
+        full_gains /= np.median(full_gains)
+        gain_by_channel = dict(zip(template_channels, full_gains, strict=True))
+        self.gains = np.asarray([gain_by_channel[channel] for channel in self.ctx.channels])
         self.harmonics = tuple(
             multiple * self.freq_hz
             for multiple in range(1, 4)
-            if multiple * self.freq_hz < self.fs / 2
+            if multiple * self.freq_hz + (self.am_hz if self.am_depth > 0 else 0.0) < nyquist
         )
         self.phases = tuple(
             float(self.ctx.subject_rng.uniform(0, 2 * np.pi)) for _ in self.harmonics
