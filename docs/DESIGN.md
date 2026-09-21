@@ -90,6 +90,7 @@ src/open_eeg_synth/
     data/eog_patterns.npz
     data/NOTICE-eegmmidb.txt
     blink.py  eye_movement.py  jaw_emg.py            (v0.2.0)
+    electrode_pop.py                                (v0.3.0)
     dead_channel.py                                  (v0.2.0, proves the transform hook)
     …                                                (future, §5.7)
   sensor.py              SensorNoise layer
@@ -990,11 +991,21 @@ boundaries divided by fs (offset None when open-ended), not the requested second
 `params = {noise_uv}`; remedies `(MARK_BAD_CHANNEL, INTERPOLATE)`. The record is listed once rendering
 has reached the first dead sample.
 
+**Electrode pop** (`kind = "electrode_pop"`, mode event) — a channel-local abrupt contact-potential
+shift followed by the exponential recovery expected when a step passes through the acquisition
+high-pass. The event draws an absolute peak from a lognormal distribution clipped to 200–2000µV,
+a recovery time constant from a lognormal distribution clipped to 0.2–2s, and a seeded positive or
+negative polarity. The sampled event ends after the response falls to 1% of its peak. A named channel
+stays fixed; `channel="random"` makes one seeded subject-level channel choice at bind time. Truth
+records the channel, polarity, peak, duration and time constant; remedies are `(MASK_SEGMENT,
+MARK_BAD_CHANNEL)`. These are the predeclared engineering ranges from §5.7, not fitted population
+distributions.
+
 ### 5.7 Future plug-ins and how they fit
 
 | plug-in | base | pattern source | signal | truth | remedies |
 |---|---|---|---|---|---|
-| electrode pop | `EventArtifact` | channel-local | step of 200–2000 µV with exponential recovery (τ 0.2–2 s), high-pass-filter-shaped tail | channel, onset, peak | `MASK_SEGMENT`, `MARK_BAD_CHANNEL` |
+| electrode pop (ships in v0.3) | `EventArtifact` | channel-local | see §5.6 | channel, onset, peak, polarity, τ | `MASK_SEGMENT`, `MARK_BAD_CHANNEL` |
 | loose lead | `ContinuousArtifact` (stateful `render`) | channel-local | low-frequency drift + pop bursts whose rate scales with `ContactTimeline.impedance(ch, t)`; the same timeline feeds a recording app's impedance display | channel, spans where impedance > threshold | `MARK_BAD_CHANNEL`, `INTERPOLATE`, `RAISE_HIGH_PASS` |
 | bridged pair | `TransformArtifact` | two channels | both channels → their mean + shared 1 µV noise | pair | `MARK_BAD_CHANNEL` |
 | dead channel (ships) | `TransformArtifact` | one channel | see §5.6 | channel | `MARK_BAD_CHANNEL`, `INTERPOLATE` |

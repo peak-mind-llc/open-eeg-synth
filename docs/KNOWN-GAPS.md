@@ -48,8 +48,10 @@ counterweight to it. Numbers here were measured on 0.2.0 unless a line says othe
   between-subject variation, and the dead channel has none by nature.
 - **The head model has no eye or muscle sources.** Both come from measured scalp maps and analytic
   shapes bolted on, which is why the two points above exist.
-- **Missing artifact types.** Electrode pop, loose lead, bridged pair, mains hum at 50 or 60 Hz, sweat
-  drift, movement and pulse are all planned for 0.3. Cleaning practice needs them to feel real.
+- **Missing artifact types.** Loose lead, bridged pair, mains hum at 50 or 60 Hz, sweat drift,
+  movement and pulse are all planned for 0.3. Cleaning practice needs them to feel real. Electrode
+  pop now exists, using the design's predeclared engineering ranges; those ranges still need
+  calibration against reviewed recordings.
 
 ## 3. Engine, scheduler and identity
 
